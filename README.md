@@ -1,3 +1,5 @@
+[![Build Status](https://travis-ci.com/fterrier/flightsim.svg?branch=master)](https://travis-ci.com/fterrier/flightsim)
+
 # flightsim
 A flight simulator
 
