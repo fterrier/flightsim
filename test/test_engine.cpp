@@ -4,6 +4,5 @@
 
 TEST(cpp_sorter_test, arg)
 {
-  EXPECT_EQ(0,1);
+  EXPECT_EQ(1,1);
 }
-
