@@ -1,4 +1,13 @@
 language: cpp
+sudo: required
+
+install:
+  - sudo apt-get install libgtest-dev
+  - cd /usr/src/gtest
+  - sudo $(which cmake) .
+  - sudo $(which make)
+  - sudo mv libgtest* /usr/lib/
+  - cd "${TRAVIS_BUILD_DIR}"
 
 before_script:
   - mkdir build
