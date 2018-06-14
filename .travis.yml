@@ -1,8 +1,5 @@
 language: cpp
 
-before_install:
-  - sudo apt-get install -y libgtest-dev
-
 before_script:
   - mkdir build
   - cd build

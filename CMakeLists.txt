@@ -11,5 +11,11 @@ target_include_directories(engine PUBLIC src/)
 
 target_link_libraries(flightsim PUBLIC engine)
 
+include(cmake/googletest.cmake)
+fetch_googletest(
+    ${PROJECT_SOURCE_DIR}/cmake
+    ${PROJECT_BINARY_DIR}/googletest
+    )
+
 enable_testing()
 add_subdirectory(test)
