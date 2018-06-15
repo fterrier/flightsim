@@ -8,11 +8,19 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_LIBDIR})
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_LIBDIR})
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR})
 
+find_package(OpenSceneGraph REQUIRED COMPONENTS osgDB osgGA osgUtil osgViewer)
+
 # move to source
 add_library(engine src/engine.h src/engine.cpp)
 target_include_directories(engine PUBLIC src/)
 
-target_link_libraries(flightsim PUBLIC engine)
+message(STATUS ${OSG_LIBRARIES})
+
+target_link_libraries(flightsim PUBLIC
+  engine
+  ${OPENSCENEGRAPH_LIBRARIES}
+  ${OPENTHREADS_LIBRARIES}
+  ${OSG_LIBRARIES})
 # end
 
 enable_testing()

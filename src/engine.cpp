@@ -3,3 +3,7 @@
 void Bla::bla() {
   
 }
+
+void sort() {
+  
+}
