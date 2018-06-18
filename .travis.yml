@@ -1,9 +1,15 @@
 language: cpp
 sudo: required
 
+addons:
+  apt:
+    sources:
+    - sourceline: "ppa:openmw/openmw"
+    packages:
+    - libgtest-dev
+    - libopenscenegraph-3.4-dev
+
 install:
-  - sudo apt-get install libopenscenegraph-dev
-  - sudo apt-get install libgtest-dev
   - cd /usr/src/gtest
   - sudo $(which cmake) .
   - sudo $(which make)

@@ -6,7 +6,7 @@ A flight simulator
 ## Dependencies
 
 - Google Test: https://github.com/google/googletest
-- OpenSceneGraph: http://www.openscenegraph.org/
+- OpenSceneGraph 3.4: http://www.openscenegraph.org/
 
 ## Howto
 
