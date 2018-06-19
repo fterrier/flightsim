@@ -1,10 +1,15 @@
 #include <osg/DisplaySettings>
+#include <osg/Fog>
 #include <osg/Geometry>
 #include <osg/LineWidth>
 #include <osg/MatrixTransform>
+#include <osg/PolygonMode>
+#include <osg/PositionAttitudeTransform>
+#include <osg/ShapeDrawable>
 #include <osgDB/ReadFile>
 #include <osgGA/TrackballManipulator>
 #include <osgViewer/CompositeViewer>
+#include <osgViewer/Viewer>
 
 // Given a Camera, create a wireframe representation of its
 // view frustum. Create a default representation if camera==NULL.
@@ -84,63 +89,105 @@ osg::Node *makeFrustumFromCamera(osg::Camera *camera) {
   return mt;
 }
 
+osg::ref_ptr<osg::PositionAttitudeTransform>
+CreateSubGraph(osg::ref_ptr<osg::Group> root, osg::ref_ptr<osg::Node> model,
+               double translation) {
+
+  osg::ref_ptr<osg::PositionAttitudeTransform> pat(
+      new osg::PositionAttitudeTransform());
+
+  root->addChild(pat);
+  pat->addChild(model);
+  pat->setPosition(osg::Vec3(translation, 0.0, 0.0));
+
+  return pat;
+}
+
+void update(osg::ref_ptr<osg::PositionAttitudeTransform> pat, float intvl) {
+  osg::Vec3 pos = pat->getPosition();
+  pat->setPosition(osg::Vec3(pos.x() + intvl, pos.y(), pos.z()));
+}
+
 int main(int argc, char **argv) {
   osg::ArgumentParser arguments(&argc, argv);
 
-  osg::ref_ptr<osg::Group> root = new osg::Group;
+  osg::ref_ptr<osg::Group> root = (new osg::Group);
 
-  // Child 0: We'll replace this every frame with an updated representation
-  //   of the view frustum.
-  root->addChild(makeFrustumFromCamera(NULL));
+  osg::ref_ptr<osg::Sphere> sphere = (new osg::Sphere(osg::Vec3(0, 0, 0), 1.0));
+  osg::ref_ptr<osg::ShapeDrawable> drawableSphere =
+      (new osg::ShapeDrawable(sphere));
 
-  osg::ref_ptr<osg::Node> scene = osgDB::readRefNodeFiles(arguments);
-  if (!scene) {
-    // User didn't specify anything, or file(s) didn't exist.
-    // Try to load the cow...
-    osg::notify(osg::WARN)
-        << arguments.getApplicationName()
-        << ": Could not find specified files. Trying \"cow.osgt\" instead."
-        << std::endl;
-    scene = osgDB::readRefNodeFile("cow.osgt");
-    if (!scene) {
-      osg::notify(osg::FATAL)
-          << arguments.getApplicationName() << ": No data loaded." << std::endl;
-      return 1;
-    }
-  }
-  root->addChild(scene);
+  osg::ref_ptr<osg::PositionAttitudeTransform> child1 =
+      CreateSubGraph(root, drawableSphere, 0.0);
+  osg::ref_ptr<osg::PositionAttitudeTransform> child2 =
+      CreateSubGraph(root, drawableSphere, 10.0);
 
-  osgViewer::CompositeViewer viewer(arguments);
-  // Turn on FSAA, makes the lines look better.
-  osg::DisplaySettings::instance()->setNumMultiSamples(4);
+  const osg::Vec4 fogColor(0.8, 0.1, 0.1, 0.9);
 
-  // Create View 0 -- Just the loaded model.
-  {
-    osgViewer::View *view = new osgViewer::View;
-    viewer.addView(view);
+  osg::ref_ptr<osg::StateSet> ss = root->getOrCreateStateSet();
+  ss->setMode(GL_LIGHTING, osg::StateAttribute::OFF);
 
-    view->setUpViewInWindow(10, 10, 640, 480);
-    view->setSceneData(scene.get());
-    view->setCameraManipulator(new osgGA::TrackballManipulator);
-  }
+  osg::ref_ptr<osg::PolygonMode> polyMode(new osg::PolygonMode());
+  polyMode->setMode(osg::PolygonMode::FRONT_AND_BACK, osg::PolygonMode::LINE);
+  ss->setAttribute(polyMode);
 
-  // Create view 1 -- Contains the loaded moel, as well as a wireframe frustum
-  // derived from View 0's Camera.
-  {
-    osgViewer::View *view = new osgViewer::View;
-    viewer.addView(view);
+  osg::ref_ptr<osg::Fog> fog(new osg::Fog());
+  fog->setMode(osg::Fog::LINEAR);
+  fog->setColor(fogColor);
+  fog->setStart(15.0);
+  fog->setEnd(100.0);
+  ss->setAttributeAndModes(fog);
 
-    view->setUpViewInWindow(10, 510, 640, 480);
-    view->setSceneData(root.get());
-    view->setCameraManipulator(new osgGA::TrackballManipulator);
-  }
+  // Create a viewer, use it to view the model
+  osgViewer::Viewer viewer;
+  viewer.setSceneData(root);
+
+  const osg::Vec4 color(0.3, 0.3, 0.8, 1);
+  viewer.getCamera()->setClearColor(color);
+
+  viewer.setCameraManipulator(new osgGA::TrackballManipulator);
+
+
+  viewer.realize();
 
   while (!viewer.done()) {
-    // Update the wireframe frustum
-    root->removeChild(0, 1);
-    root->insertChild(0, makeFrustumFromCamera(viewer.getView(0)->getCamera()));
-
     viewer.frame();
+    update(child1, 0.001);
   }
+
+  // osgViewer::CompositeViewer viewer(arguments);
+  // // Turn on FSAA, makes the lines look better.
+  // osg::DisplaySettings::instance()->setNumMultiSamples(4);
+
+  // // Create View 0 -- Just the loaded model.
+  // {
+  //   osgViewer::View *view = new osgViewer::View;
+  //   viewer.addView(view);
+
+  //   view->setUpViewInWindow(10, 10, 640, 480);
+  //   view->setSceneData(scene.get());
+  //   view->setCameraManipulator(new osgGA::TrackballManipulator);
+  // }
+
+  // // Create view 1 -- Contains the loaded moel, as well as a wireframe
+  // frustum
+  // // derived from View 0's Camera.
+  // {
+  //   osgViewer::View *view = new osgViewer::View;
+  //   viewer.addView(view);
+
+  //   view->setUpViewInWindow(10, 510, 640, 480);
+  //   view->setSceneData(root.get());
+  //   view->setCameraManipulator(new osgGA::TrackballManipulator);
+  // }
+
+  // while (!viewer.done()) {
+  //   // Update the wireframe frustum
+  //   root->removeChild(0, 1);
+  //   root->insertChild(0,
+  //   makeFrustumFromCamera(viewer.getView(0)->getCamera()));
+
+  //   viewer.frame();
+  // }
   return 0;
 }

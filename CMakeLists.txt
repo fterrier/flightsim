@@ -1,7 +1,6 @@
 cmake_minimum_required(VERSION 3.9)
 
 project(flightsim)
-add_executable(flightsim src/main.cpp)
 
 include(GNUInstallDirs)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_LIBDIR})
@@ -14,11 +13,20 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR})
 find_package(OpenSceneGraph REQUIRED COMPONENTS osgDB osgGA osgUtil osgViewer)
 
 # move to source
-add_library(engine src/engine.h src/engine.cpp)
-target_include_directories(engine PUBLIC src/)
+add_executable(flightsim src/main.cpp)
+
+add_library(flightsim_lib
+  src/plane.h
+  src/plane.cpp
+  src/engine.h
+  src/engine.cpp
+  src/fs_math.h
+  src/fs_math.cpp)
+
+target_include_directories(flightsim_lib PUBLIC src/)
 
 target_link_libraries(flightsim PUBLIC
-  engine
+  flightsim_lib
 
   # if using include
   #OpenSceneGraph
