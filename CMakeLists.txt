@@ -10,8 +10,8 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR})
 ## this seems to be taking too long to build
 #include(external/OpenSceneGraph.cmake)
 
+include(external/spdlog.cmake)
 find_package(OpenSceneGraph REQUIRED COMPONENTS osgDB osgGA osgUtil osgViewer)
-find_package(spdlog REQUIRED)
 
 # move to source
 
