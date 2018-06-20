@@ -11,17 +11,26 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR})
 #include(external/OpenSceneGraph.cmake)
 
 find_package(OpenSceneGraph REQUIRED COMPONENTS osgDB osgGA osgUtil osgViewer)
+find_package(spdlog REQUIRED)
 
 # move to source
+
 add_executable(flightsim src/main.cpp)
 
 add_library(flightsim_lib
+  src/game_loop.h
+  src/game_loop.cpp
   src/plane.h
   src/plane.cpp
+  src/simulation.h
+  src/simulation.cpp
   src/engine.h
   src/engine.cpp
   src/fs_math.h
   src/fs_math.cpp)
+
+target_compile_features(flightsim_lib PRIVATE cxx_lambdas)
+target_compile_features(flightsim PRIVATE cxx_lambdas)
 
 target_include_directories(flightsim_lib PUBLIC src/)
 
