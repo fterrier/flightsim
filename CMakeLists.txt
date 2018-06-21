@@ -1,5 +1,11 @@
 cmake_minimum_required(VERSION 3.9)
 
+include("external/HunterGate.cmake")
+HunterGate(
+    URL "https://github.com/ruslo/hunter/archive/v0.16.15.tar.gz"
+    SHA1 "6974c2150fc0d3b09de3ad1efcbf15d360647ffa"
+    )
+
 project(flightsim)
 
 include(GNUInstallDirs)
@@ -10,7 +16,8 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR})
 ## this seems to be taking too long to build
 #include(external/OpenSceneGraph.cmake)
 
-include(external/spdlog.cmake)
+hunter_add_package(spdlog)
+find_package(spdlog CONFIG REQUIRED)
 find_package(OpenSceneGraph REQUIRED COMPONENTS osgDB osgGA osgUtil osgViewer)
 
 # move to source
@@ -34,6 +41,7 @@ target_compile_features(flightsim PRIVATE cxx_lambdas)
 
 target_include_directories(flightsim_lib PUBLIC src/)
 
+target_link_libraries(flightsim_lib PUBLIC spdlog::spdlog)
 target_link_libraries(flightsim PUBLIC
   flightsim_lib
 
