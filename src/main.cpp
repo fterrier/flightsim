@@ -4,11 +4,12 @@
 #include <osgGA/TrackballManipulator>
 #include <osgViewer/Viewer>
 
-#include "simulation.h"
-#include <memory>
 #include <chrono>
 #include <iostream>
+#include <memory>
 
+#include "game_loop.h"
+#include "simulation.h"
 #include "spdlog/spdlog.h"
 
 using namespace std;
@@ -31,6 +32,24 @@ void update(osg::ref_ptr<osg::PositionAttitudeTransform> pat) {
   osg::Vec3 pos = pat->getPosition();
   pat->setPosition(osg::Vec3(pos.x() + 0.0000001, pos.y(), pos.z()));
 }
+
+class FlightSimGame : public fs::Game {
+
+public:
+
+  bool done() {
+    // viewer.done()
+    return false;
+  }
+  void update() {
+    //  sim.updateSimulation(d.count());
+  }
+  void render() {
+    //  viewer.frame();
+  }
+
+private:
+};
 
 int main(int argc, char **argv) {
   osg::ArgumentParser arguments(&argc, argv);
@@ -63,35 +82,8 @@ int main(int argc, char **argv) {
 
   viewer.realize();
 
-  using clock = std::chrono::high_resolution_clock;
+  shared_ptr<fs::Game> flightSimGame = make_shared<FlightSimGame>();
+  fs::startLoop(flightSimGame);
 
-  // 60fps
-  constexpr std::chrono::nanoseconds timestep(16000000);
-
-  auto console = spdlog::stdout_logger_mt("console");
-
-  while (!viewer.done()) {
-    // TODO process user input
-
-    auto frame_start = clock::now();
-    auto time_now = frame_start;
-    std::chrono::duration<float> delta;
-
-    while(time_now - frame_start < timestep) {
-      typedef std::chrono::nanoseconds ns;
-      ns d = std::chrono::duration_cast<ns>(delta);
-
-      console->info("Updating simulation with interval: {0:d}", d.count());
-      sim.updateSimulation(d.count());
-
-      auto last_update = time_now;
-      time_now = clock::now();
-
-      delta = time_now - last_update;
-    }
-
-    console->info("Rendering frame");
-    viewer.frame();
-  }
   return 0;
 }
