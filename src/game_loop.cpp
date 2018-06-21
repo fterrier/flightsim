@@ -9,7 +9,7 @@ using namespace std;
 
 namespace fs {
 
-void startLoop(shared_ptr<fs::Game> game) {
+void Game::startLoop() {
   using clock = std::chrono::high_resolution_clock;
 
   // 60fps
@@ -17,7 +17,7 @@ void startLoop(shared_ptr<fs::Game> game) {
 
   auto console = spdlog::stdout_logger_mt("console");
 
-  while (!game->done()) {
+  while (!done()) {
     auto frame_start = clock::now();
     auto time_now = frame_start;
     std::chrono::duration<float> delta;
@@ -27,7 +27,7 @@ void startLoop(shared_ptr<fs::Game> game) {
       ns d = std::chrono::duration_cast<ns>(delta);
 
       console->info("Updating simulation with interval: {0:d}", d.count());
-      game->update(d.count());
+      update(d.count());
 
       auto last_update = time_now;
       time_now = clock::now();
@@ -36,7 +36,7 @@ void startLoop(shared_ptr<fs::Game> game) {
     }
 
     console->info("Rendering frame");
-    game->render();
+    render();
   }
 }
 

@@ -36,54 +36,54 @@ void update(osg::ref_ptr<osg::PositionAttitudeTransform> pat) {
 class FlightSimGame : public fs::Game {
 
 public:
+  FlightSimGame() {
+    addObjects();
+    initViewer();
+  }
 
-  bool done() {
-    // viewer.done()
-    return false;
-  }
-  void update() {
-    //  sim.updateSimulation(d.count());
-  }
-  void render() {
-    //  viewer.frame();
-  }
+  bool done() { return viewer.done(); }
+
+  void update(double interval) { simulation.updateSimulation(interval); }
+
+  void render() { viewer.frame(); }
 
 private:
+  fs::Simulation simulation;
+  osgViewer::Viewer viewer;
+  osg::ref_ptr<osg::Group> root = (new osg::Group);
+
+  void initViewer() {
+    // Create a viewer, use it to view the model
+    viewer.setSceneData(root);
+    viewer.setCameraManipulator(new osgGA::TrackballManipulator);
+    viewer.realize();
+  }
+
+  void addObjects() {
+    osg::ref_ptr<osg::StateSet> ss = root->getOrCreateStateSet();
+
+    osg::ref_ptr<osg::PolygonMode> polyMode(new osg::PolygonMode());
+    polyMode->setMode(osg::PolygonMode::FRONT_AND_BACK, osg::PolygonMode::LINE);
+    ss->setAttribute(polyMode);
+
+    osg::ref_ptr<osg::Sphere> sphere =
+        (new osg::Sphere(osg::Vec3(0, 0, 0), 1.0));
+    osg::ref_ptr<osg::ShapeDrawable> drawableSphere =
+        (new osg::ShapeDrawable(sphere));
+
+    osg::ref_ptr<osg::PositionAttitudeTransform> child1 =
+        CreateSubGraph(root, drawableSphere, 0.0);
+
+    fs::updater updater = [child1](fs::Vector3 pos) { ::update(child1); };
+    simulation.addPlane(make_shared<fs::Plane>(), updater);
+  }
 };
 
 int main(int argc, char **argv) {
   osg::ArgumentParser arguments(&argc, argv);
 
-  osg::ref_ptr<osg::Group> root = (new osg::Group);
-
-  osg::ref_ptr<osg::Sphere> sphere = (new osg::Sphere(osg::Vec3(0, 0, 0), 1.0));
-  osg::ref_ptr<osg::ShapeDrawable> drawableSphere =
-      (new osg::ShapeDrawable(sphere));
-
-  osg::ref_ptr<osg::PositionAttitudeTransform> child1 =
-      CreateSubGraph(root, drawableSphere, 0.0);
-
-  osg::ref_ptr<osg::StateSet> ss = root->getOrCreateStateSet();
-
-  osg::ref_ptr<osg::PolygonMode> polyMode(new osg::PolygonMode());
-  polyMode->setMode(osg::PolygonMode::FRONT_AND_BACK, osg::PolygonMode::LINE);
-  ss->setAttribute(polyMode);
-
-  // Create a viewer, use it to view the model
-  osgViewer::Viewer viewer;
-  viewer.setSceneData(root);
-
-  viewer.setCameraManipulator(new osgGA::TrackballManipulator);
-
-  fs::Simulation sim = fs::Simulation();
-
-  fs::updater updater = [child1](fs::Vector3 pos) { update(child1); };
-  sim.addPlane(make_shared<fs::Plane>(), updater);
-
-  viewer.realize();
-
-  shared_ptr<fs::Game> flightSimGame = make_shared<FlightSimGame>();
-  fs::startLoop(flightSimGame);
+  FlightSimGame flightSimGame;
+  flightSimGame.startLoop();
 
   return 0;
 }
