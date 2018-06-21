@@ -6,15 +6,7 @@ addons:
     sources:
     - sourceline: "ppa:openmw/openmw"
     packages:
-    - libgtest-dev
     - libopenscenegraph-3.4-dev
-
-install:
-  - cd /usr/src/gtest
-  - sudo $(which cmake) .
-  - sudo $(which make)
-  - sudo mv libgtest* /usr/lib/
-  - cd "${TRAVIS_BUILD_DIR}"
 
 before_script:
   - mkdir build

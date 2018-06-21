@@ -16,11 +16,11 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR})
 ## this seems to be taking too long to build
 #include(external/OpenSceneGraph.cmake)
 
+# move to source
+
 hunter_add_package(spdlog)
 find_package(spdlog CONFIG REQUIRED)
 find_package(OpenSceneGraph REQUIRED COMPONENTS osgDB osgGA osgUtil osgViewer)
-
-# move to source
 
 add_executable(flightsim src/main.cpp)
 

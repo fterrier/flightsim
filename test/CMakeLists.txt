@@ -1,4 +1,6 @@
+hunter_add_package(GTest)
 find_package(GTest REQUIRED)
+
 find_package(Threads REQUIRED)
 
 add_executable(test_flightsim test_engine.cpp test_plane.cpp test_fs_math.cpp test_simulation.cpp)
