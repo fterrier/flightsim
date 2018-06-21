@@ -68,7 +68,7 @@ int main(int argc, char **argv) {
   // 60fps
   constexpr std::chrono::nanoseconds timestep(16000000);
 
-  auto console = spdlog::stdout_color_mt("console");
+  auto console = spdlog::stdout_logger_mt("console");
 
   while (!viewer.done()) {
     // TODO process user input
