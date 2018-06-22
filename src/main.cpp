@@ -10,6 +10,7 @@
 
 #include "game_loop.h"
 #include "simulation.h"
+#include "plane.h"
 #include "spdlog/spdlog.h"
 
 using namespace std;
@@ -80,7 +81,10 @@ private:
       child1->setPosition(osg::Vec3(pos.x(), pos.y(), pos.z()));
     };
 
-    simulation.addObject(make_shared<fs::BasicObject>(), updater);
+    shared_ptr<fs::BasicObject> plane = make_shared<fs::BasicObject>();
+    shared_ptr<fs::Behaviour> gravity = make_shared<fs::GravityBehaviour>();
+    plane->addBehaviour(gravity);
+    simulation.addObject(plane, updater);
   }
 };
 

@@ -32,4 +32,9 @@ bool Vector3::operator!=(const fs::Vector3 &rhs) const {
   return rhs._x != _x || rhs._y != _y || rhs._z != _z;
 }
 
+std::ostream &operator<<(std::ostream &strm, const Vector3 &rhs) {
+  strm << "(" << rhs._x << "," << rhs._y << "," << rhs._z << ")";
+  return strm;
+}
+
 } // namespace fs

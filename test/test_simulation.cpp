@@ -20,10 +20,9 @@ TEST(Simulation, UpdaterCalled) {
   EXPECT_EQ(actual, fs::Vector3(0,0,0));
 }
 
-TEST(BasicObject, Gravity) {
-  fs::BasicObject os = fs::BasicObject();
+TEST(Behaviour, Gravity) {
+  shared_ptr<fs::Behaviour> b = make_shared<fs::GravityBehaviour>();
 
   // in 1 second, the object accelerates of 9.81
-  os.updateVelocity(1e9);
-  EXPECT_EQ(fs::Vector3(0,-9.81,0), os.getVelocity());
+  EXPECT_EQ(fs::Vector3(0,-9.81,0), b->getComponent(fs::Vector3(0,0,0), 1e9));
 }

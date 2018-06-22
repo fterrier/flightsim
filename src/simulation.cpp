@@ -9,12 +9,18 @@ namespace fs {
 
 auto console = spdlog::stdout_logger_mt("simulation");
 
-void BasicObject::updateVelocity(double intervalNs) {
-  // velocity is current velocity + force
-  velocity = velocity + gravityVector * gravity * intervalNs * 1e-9;
+void BasicObject::addBehaviour(shared_ptr<Behaviour> behaviour) {
+  _behaviours.push_back(behaviour);
 }
 
-void BasicObject::updatePosition() { position = position + velocity; }
+void BasicObject::updateVelocity(double intervalNs) {
+  for (std::list<shared_ptr<fs::Behaviour>>::iterator it = _behaviours.begin();
+       it != _behaviours.end(); ++it) {
+    _velocity = (*it)->getComponent(_velocity, intervalNs);
+  }
+}
+
+void BasicObject::updatePosition() { _position = _position + _velocity; }
 
 void Simulation::updateSimulation(int ns) {
 
