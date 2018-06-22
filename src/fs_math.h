@@ -13,6 +13,8 @@ public:
 
   bool operator==(const Vector3 & rhs) const;
   bool operator!=(const Vector3 & rhs) const;
+  Vector3 operator+(const Vector3 & rhs) const;
+  Vector3 operator*(const double & rhs) const;
 
 private:
   double _x;

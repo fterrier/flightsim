@@ -28,11 +28,6 @@ CreateSubGraph(osg::ref_ptr<osg::Group> root, osg::ref_ptr<osg::Node> model,
   return pat;
 }
 
-void update(osg::ref_ptr<osg::PositionAttitudeTransform> pat) {
-  osg::Vec3 pos = pat->getPosition();
-  pat->setPosition(osg::Vec3(pos.x() + 0.0000001, pos.y(), pos.z()));
-}
-
 class FlightSimGame : public fs::Game {
 
 public:
@@ -55,7 +50,14 @@ private:
   void initViewer() {
     // Create a viewer, use it to view the model
     viewer.setSceneData(root);
-    viewer.setCameraManipulator(new osgGA::TrackballManipulator);
+    //    viewer.setCameraManipulator(new osgGA::TrackballManipulator);
+
+    osg::Vec3d eye( 100.0, 0.0, 100.0 );
+    osg::Vec3d center( -1.0, 0.0, -1.0 );
+    osg::Vec3d up( 0.0, 1.0, 0.0 );
+
+    //viewer.getCamera()->setProjectionMatrix(osg::Matrix::perspective(1, 1, 0.1, 500));
+    viewer.getCamera()->setViewMatrixAsLookAt( eye, center, up );
     viewer.realize();
   }
 
@@ -74,8 +76,11 @@ private:
     osg::ref_ptr<osg::PositionAttitudeTransform> child1 =
         CreateSubGraph(root, drawableSphere, 0.0);
 
-    fs::updater updater = [child1](fs::Vector3 pos) { ::update(child1); };
-    simulation.addPlane(make_shared<fs::Plane>(), updater);
+    fs::updater updater = [child1](fs::Vector3 pos) {
+      child1->setPosition(osg::Vec3(pos.x(), pos.y(), pos.z()));
+    };
+
+    simulation.addObject(make_shared<fs::BasicObject>(), updater);
   }
 };
 

@@ -9,6 +9,7 @@ class Plane {
 
 public:
   float getWeight();
+
   fs::Vector3 getLift();
   fs::Vector3 getDrag();
   fs::Vector3 getPower();

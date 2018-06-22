@@ -15,7 +15,7 @@ void Game::startLoop() {
   // 60fps
   constexpr std::chrono::nanoseconds timestep(16000000);
 
-  auto console = spdlog::stdout_logger_mt("console");
+  auto console = spdlog::stdout_logger_mt("game_loop");
 
   while (!done()) {
     auto frame_start = clock::now();
