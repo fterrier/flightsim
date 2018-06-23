@@ -45,6 +45,9 @@ public:
 
 private:
   fs::Simulation simulation;
+  fs::GravityBehaviour gravity;
+  fs::BasicObject plane = fs::BasicObject();
+
   osgViewer::Viewer viewer;
   osg::ref_ptr<osg::Group> root = (new osg::Group);
 
@@ -81,10 +84,8 @@ private:
       child1->setPosition(osg::Vec3(pos.x(), pos.y(), pos.z()));
     };
 
-    shared_ptr<fs::BasicObject> plane = make_shared<fs::BasicObject>();
-    shared_ptr<fs::Behaviour> gravity = make_shared<fs::GravityBehaviour>();
-    plane->addBehaviour(gravity);
-    simulation.addObject(plane, updater);
+    plane.addBehaviour(&gravity);
+    simulation.addObject(&plane, updater);
   }
 };
 

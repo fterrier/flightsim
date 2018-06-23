@@ -11,12 +11,12 @@ using namespace std;
 
 namespace fs {
 
-typedef function<void(fs::Vector3)> updater;
+typedef function<void(const fs::Vector3 &)> updater;
 
 class Behaviour {
 
 public:
-  virtual Vector3 getComponent(const Vector3& velocity, double intervalNs) = 0;
+  virtual Vector3 getComponent(const Vector3 &velocity, double intervalNs) = 0;
 };
 
 class GravityBehaviour : public Behaviour {
@@ -26,16 +26,15 @@ private:
   double gravity = 9.81;
 
 public:
-  Vector3 getComponent(const Vector3& velocity, double intervalNs) {
+  Vector3 getComponent(const Vector3 &velocity, double intervalNs) {
     return velocity + gravityVector * gravity * intervalNs * 1e-9;
   }
-
 };
 
 class BasicObject {
 
 public:
-  void addBehaviour(shared_ptr<fs::Behaviour> behaviour);
+  void addBehaviour(fs::Behaviour* behaviour);
 
   void updateVelocity(double intervalNs);
   void updatePosition();
@@ -44,7 +43,7 @@ public:
   Vector3 getPosition() { return _position; }
 
 protected:
-  std::list<shared_ptr<fs::Behaviour>> _behaviours;
+  std::list<fs::Behaviour*> _behaviours;
   Vector3 _velocity;
   Vector3 _position;
 };
@@ -53,10 +52,10 @@ class Simulation {
 
 public:
   void updateSimulation(int ns);
-  void addObject(shared_ptr<fs::BasicObject> state, fs::updater &updater);
+  void addObject(fs::BasicObject* object, fs::updater &updater);
 
 private:
-  map<shared_ptr<fs::BasicObject>, fs::updater> updaters;
+  map<fs::BasicObject*, fs::updater> updaters;
 };
 
 } // namespace fs
