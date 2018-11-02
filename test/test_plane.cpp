@@ -3,22 +3,29 @@
 #include "gtest/gtest.h"
 
 
-TEST(PlaneModelTest, StraightTest)
-{
-  fs::PlaneModel* plane = new fs::PlaneModel();
+// TEST(PlaneModelTest, StraightTest)
+// {
+//   fs::PlaneModel* plane = new fs::PlaneModel();
 
-  EXPECT_EQ(fs::Vector3(0,0,0), plane->getLift());
-  EXPECT_EQ(fs::Vector3(1,0,0), plane->getThrust(2500));
-
-}
+//   fs::Vector3 zero{0,0,0};
+//   fs::Vector3 forward{1,0,0};
+//   EXPECT_EQ(zero, plane->getLift());
+//   EXPECT_EQ(forward, plane->getThrust(2500));
+// }
 
 
 TEST(PlaneModelTest, StraightAndLevelTest)
 {
   fs::Plane plane;
 
-  plane.setPower(2500);
+  // parameters
+  //plane.setPower(2500);
 
+  fs::Vector3 forward{1,0,0};
   // velocity does not change under conditions for straight and level flight
-  EXPECT_EQ(fs::Vector3(1,0,0), plane.getComponent(fs::Vector3(1,0,0), 1e9));
+  updatePlaneSimulation(fs::InputState(), plane, 1e9);
+
+  EXPECT_EQ(forward, plane.velocity);
 }
+
+

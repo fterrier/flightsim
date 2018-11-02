@@ -6,12 +6,9 @@
 namespace fs {
 class Vector3 {
 public:
-  Vector3();
-  Vector3(double x, double y, double z);
-
-  double x();
-  double y();
-  double z();
+  double x;
+  double y;
+  double z;
 
   bool operator==(const Vector3 &rhs) const;
   bool operator!=(const Vector3 &rhs) const;
@@ -19,11 +16,6 @@ public:
   Vector3 operator*(const double &rhs) const;
 
   friend std::ostream &operator<<(std::ostream &strm, const Vector3 &rhs);
-
-private:
-  double _x;
-  double _y;
-  double _z;
 };
 
 class Moment {

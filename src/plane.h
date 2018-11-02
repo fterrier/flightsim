@@ -6,33 +6,25 @@
 
 namespace fs {
 
-class PlaneModel {
-
-public:
-  PlaneModel() {};
-
-  float getWeight();
-
-  fs::Vector3 getLift();
-  fs::Vector3 getDrag();
-  fs::Vector3 getThrust(double power);
-  fs::Moment getMoment();
+struct Controls {
+  double throttle;
 };
 
-class Plane : public Behaviour {
-
+class Plane : public BasicObject {
 public:
-  Plane();
-  Plane(PlaneModel model);
-
-  Vector3 getComponent(const fs::Vector3& velocity, double intervalNs);
-  void setPower(const double power);
+  void updateControls(const fs::InputState &state, double intervalNs);
+  void updateVelocity(double intervalNs);
 
 private:
-  PlaneModel _model;
-  double _power;
+  Controls controls;
 
+  double _power = 1;
+
+  void updatePower();
 };
+
+void updatePlaneSimulation(const fs::InputState &inputState, fs::Plane &plane,
+                           double intervalNs);
 
 } // namespace fs
 
