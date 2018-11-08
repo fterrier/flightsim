@@ -3,10 +3,13 @@
 #include <osg/ShapeDrawable>
 #include <osgGA/TrackballManipulator>
 #include <osgViewer/Viewer>
+#include <osgViewer/ViewerEventHandlers>
+#include <osgText/Text>
 
 #include <chrono>
 #include <iostream>
 #include <memory>
+#include <string>
 
 #include "game_loop.h"
 #include "plane.h"
@@ -15,12 +18,9 @@
 
 using namespace std;
 
-static osg::ref_ptr<osg::PositionAttitudeTransform>
-CreateSubGraph(osg::ref_ptr<osg::Group> root, osg::ref_ptr<osg::Node> model,
-               double translation) {
+static osg::ref_ptr<osg::PositionAttitudeTransform> CreateSubGraph(osg::ref_ptr<osg::Group> root, osg::ref_ptr<osg::Node> model, double translation) {
 
-  osg::ref_ptr<osg::PositionAttitudeTransform> pat(
-      new osg::PositionAttitudeTransform());
+  osg::ref_ptr<osg::PositionAttitudeTransform> pat(new osg::PositionAttitudeTransform());
 
   root->addChild(pat);
   pat->addChild(model);
@@ -45,6 +45,7 @@ public:
                       osg::NodeVisitor *nv) {
 
     switch (ea.getEventType()) {
+
     // TODO replace with key mapping
     case osgGA::GUIEventAdapter::KEYDOWN: {
       if (ea.getKey() == osgGA::GUIEventAdapter::KEY_Up) {
@@ -77,14 +78,13 @@ class FlightSimGame : public fs::Game {
 public:
   FlightSimGame() {
     addObjects();
+    addDebugInformation();
     initViewer();
   }
 
   bool done() { return viewer.done(); }
 
   void update(double interval) {
-    // TODO get keyboard input
-
     updatePlaneSimulation(inputState, plane, interval);
   }
 
@@ -94,9 +94,12 @@ public:
     // TODO 2. collect all render objects that need to be updated
     // update all
 
-    // use updater to update rendering
+    // use updater to update rendering of plane
     fs::Vector3 position = plane.position * 1e-6;
     child->setPosition(osg::Vec3d(position.x, position.y, position.z));
+
+    // we update the rendering of the debug information
+    throttleDebug->setText(fmt::format("Throttle: {:-f}", plane.getControls()->throttle));
 
     viewer.frame();
   }
@@ -104,7 +107,9 @@ public:
 private:
   fs::InputState inputState;
   fs::Plane plane;
+
   osg::ref_ptr<osg::PositionAttitudeTransform> child;
+  osg::ref_ptr<osgText::Text> throttleDebug;
 
   osgViewer::Viewer viewer;
   osg::ref_ptr<osg::Group> root = (new osg::Group);
@@ -112,7 +117,7 @@ private:
   void initViewer() {
 
     viewer.setSceneData(root);
-    //    viewer.setCameraManipulator(new osgGA::TrackballManipulator);
+    // viewer.setCameraManipulator(new osgGA::TrackballManipulator);
 
     osg::Vec3d eye(100.0, 0.0, 100.0);
     osg::Vec3d center(-1.0, 0.0, -1.0);
@@ -121,24 +126,61 @@ private:
     // viewer.getCamera()->setProjectionMatrix(osg::Matrix::perspective(1, 1, 0.1, 500));
     viewer.getCamera()->setViewMatrixAsLookAt(eye, center, up);
     viewer.addEventHandler(new KeyboardHandler(inputState));
+    viewer.addEventHandler(new osgViewer::StatsHandler);
 
     viewer.realize();
   }
 
+  osg::Camera* createHUDCamera( double left, double right, double bottom, double top )
+  {
+    osg::ref_ptr<osg::Camera> camera = new osg::Camera;
+    camera->setReferenceFrame( osg::Transform::ABSOLUTE_RF );
+    camera->setClearMask( GL_DEPTH_BUFFER_BIT );
+    camera->setRenderOrder( osg::Camera::POST_RENDER );
+    camera->setAllowEventFocus( false );
+    camera->setProjectionMatrix(osg::Matrix::ortho2D(left, right, bottom, top));
+    return camera.release();
+  }
+
+  osg::ref_ptr<osgText::Text> createText(const osg::Vec3& pos, float size)
+  {
+    osg::ref_ptr<osgText::Font> g_font = osgText::readFontFile("fonts/arial.ttf");
+
+    osg::ref_ptr<osgText::Text> text = new osgText::Text;
+    text->setFont(g_font);
+    text->setCharacterSize( size );
+    text->setAxisAlignment( osgText::TextBase::XY_PLANE );
+    text->setText("");
+    text->setPosition( pos );
+    return text;
+  }
+
   void addObjects() {
-    osg::ref_ptr<osg::StateSet> ss = root->getOrCreateStateSet();
+    //osg::ref_ptr<osg::StateSet> ss = root->getOrCreateStateSet();
 
-    osg::ref_ptr<osg::PolygonMode> polyMode(new osg::PolygonMode());
-    polyMode->setMode(osg::PolygonMode::FRONT_AND_BACK, osg::PolygonMode::LINE);
-    ss->setAttribute(polyMode);
+    //osg::ref_ptr<osg::PolygonMode> polyMode(new osg::PolygonMode());
+    //polyMode->setMode(osg::PolygonMode::FRONT_AND_BACK, osg::PolygonMode::LINE);
+    //ss->setAttribute(polyMode);
 
-    osg::ref_ptr<osg::Sphere> sphere =
-        (new osg::Sphere(osg::Vec3(0, 0, 0), 1.0));
-    osg::ref_ptr<osg::ShapeDrawable> drawableSphere =
-        (new osg::ShapeDrawable(sphere));
+    osg::ref_ptr<osg::Sphere> sphere = (new osg::Sphere(osg::Vec3(0, 0, 0), 1.0));
+    osg::ref_ptr<osg::ShapeDrawable> drawableSphere = (new osg::ShapeDrawable(sphere));
 
     child = CreateSubGraph(root, drawableSphere, 0.0);
   }
+
+  void addDebugInformation() {
+    osg::ref_ptr<osg::Geode> textGeode = new osg::Geode;
+
+    throttleDebug = createText(osg::Vec3(0.0f, 500.0f, 0.0f), 5.0f);
+    textGeode->addDrawable(throttleDebug);
+    osg::Camera* camera = createHUDCamera(0, 1024, 0, 512);
+
+    camera->addChild(textGeode);
+    camera->getOrCreateStateSet()->setMode(GL_LIGHTING, osg::StateAttribute::OFF);
+
+    root->addChild(camera);
+  }
+
 };
 
 int main(int argc, char **argv) {

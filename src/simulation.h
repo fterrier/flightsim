@@ -33,8 +33,6 @@ public:
   void updatePosition();
 };
 
-Vector3 getGravityVelocityUpdate(const Vector3 &velocity, double intervalNs);
-
 } // namespace fs
 
 #endif

@@ -24,7 +24,7 @@ find_package(spdlog CONFIG REQUIRED)
 # hunter_add_package(SDL2)
 # find_package(SDL2 CONFIG REQUIRED)
 
-find_package(OpenSceneGraph REQUIRED COMPONENTS osgDB osgGA osgUtil osgViewer)
+find_package(OpenSceneGraph REQUIRED COMPONENTS osgDB osgGA osgUtil osgViewer osgText osgFX osgShadow osgParticle)
 
 add_executable(flightsim src/main.cpp)
 

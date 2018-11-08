@@ -2,6 +2,13 @@
 
 namespace fs {
 
+fs::Vector3 Vector3::operator-(const fs::Vector3 &rhs) const {
+  return fs::Vector3{x - rhs.x, y - rhs.y, z - rhs.z};
+}
+
+fs::Vector3 Vector3::operator-() const {
+  return fs::Vector3{-x, -y, -z};
+}
 
 fs::Vector3 Vector3::operator+(const fs::Vector3 &rhs) const {
   return fs::Vector3{x + rhs.x, y + rhs.y, z + rhs.z};

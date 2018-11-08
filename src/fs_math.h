@@ -13,7 +13,9 @@ public:
   bool operator==(const Vector3 &rhs) const;
   bool operator!=(const Vector3 &rhs) const;
   Vector3 operator+(const Vector3 &rhs) const;
+  Vector3 operator-(const Vector3 &rhs) const;
   Vector3 operator*(const double &rhs) const;
+  Vector3 operator-() const;
 
   friend std::ostream &operator<<(std::ostream &strm, const Vector3 &rhs);
 };
