@@ -35,8 +35,6 @@ add_library(flightsim_lib
   src/plane.cpp
   src/simulation.h
   src/simulation.cpp
-  src/engine.h
-  src/engine.cpp
   src/fs_math.h
   src/fs_math.cpp)
 
@@ -44,12 +42,15 @@ target_compile_features(flightsim_lib PRIVATE cxx_lambdas)
 target_compile_features(flightsim PRIVATE cxx_lambdas)
 
 target_include_directories(flightsim_lib PUBLIC src/)
+target_include_directories(flightsim_lib PUBLIC /usr/local/include/)
 
 target_link_libraries(flightsim_lib PUBLIC spdlog::spdlog
   #SDL2::SDL2
   )
 target_link_libraries(flightsim PUBLIC
   flightsim_lib
+
+  PUBLIC
 
   # if using include
   #OpenSceneGraph
@@ -61,6 +62,8 @@ target_link_libraries(flightsim PUBLIC
   ${OSG_LIBRARIES}
   )
 # end
+
+message(${OPENSCENEGRAPH_INCLUDE_DIR})
 
 enable_testing()
 add_subdirectory(test)

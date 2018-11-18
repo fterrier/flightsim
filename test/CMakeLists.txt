@@ -3,7 +3,6 @@ find_package(GTest CONFIG REQUIRED)
 find_package(GTest REQUIRED)
 
 add_executable(test_flightsim
-  test_engine.cpp
   test_plane.cpp
   test_fs_math.cpp
   test_simulation.cpp)

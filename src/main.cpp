@@ -32,11 +32,11 @@ static osg::ref_ptr<osg::PositionAttitudeTransform> CreateSubGraph(osg::ref_ptr<
 class KeyboardHandler : public osgGA::GUIEventHandler {
 
 private:
-  fs::InputState &_inputState;
+  InputState &_inputState;
   // shared_ptr<spdlog::logger> console;
 
 public:
-  KeyboardHandler(fs::InputState &inputState) : _inputState(inputState) {
+  KeyboardHandler(InputState &inputState) : _inputState(inputState) {
     // console = spdlog::stdout_logger_mt("keyboard");
   }
 
@@ -49,20 +49,20 @@ public:
     // TODO replace with key mapping
     case osgGA::GUIEventAdapter::KEYDOWN: {
       if (ea.getKey() == osgGA::GUIEventAdapter::KEY_Up) {
-        _inputState.setKey(fs::InputState::KEY_UP);
+        _inputState.setKey(InputState::KEY_UP);
       }
       if (ea.getKey() == osgGA::GUIEventAdapter::KEY_Down) {
-        _inputState.setKey(fs::InputState::KEY_DOWN);
+        _inputState.setKey(InputState::KEY_DOWN);
       }
 
       return false;
     }
     case osgGA::GUIEventAdapter::KEYUP: {
       if (ea.getKey() == osgGA::GUIEventAdapter::KEY_Up) {
-        _inputState.unsetKey(fs::InputState::KEY_UP);
+        _inputState.unsetKey(InputState::KEY_UP);
       }
       if (ea.getKey() == osgGA::GUIEventAdapter::KEY_Down) {
-        _inputState.unsetKey(fs::InputState::KEY_DOWN);
+        _inputState.unsetKey(InputState::KEY_DOWN);
       }
 
       return false;
@@ -73,7 +73,7 @@ public:
   }
 };
 
-class FlightSimGame : public fs::Game {
+class FlightSimGame : public Game {
 
 public:
   FlightSimGame() {
@@ -95,20 +95,26 @@ public:
     // update all
 
     // use updater to update rendering of plane
-    fs::Vector3 position = plane.position * 1e-6;
+    Vector3 position = plane.position;
     child->setPosition(osg::Vec3d(position.x, position.y, position.z));
 
     // we update the rendering of the debug information
-    throttleDebug->setText(fmt::format("Throttle: {:-f}", plane.getControls()->throttle));
+    throttleDebug->setText(fmt::format("Throttle: {:-f}\nX: {:-f}\nY: {:-f}\nZ: {:-f}",
+                                       plane.getControls()->throttle,
+                                       plane.position.x,
+                                       plane.position.y,
+                                       plane.position.z));
 
     viewer.frame();
   }
 
 private:
-  fs::InputState inputState;
-  fs::Plane plane;
+  InputState inputState;
+  Plane plane;
 
   osg::ref_ptr<osg::PositionAttitudeTransform> child;
+
+  // TODO replace with own transform
   osg::ref_ptr<osgText::Text> throttleDebug;
 
   osgViewer::Viewer viewer;
@@ -119,18 +125,25 @@ private:
     viewer.setSceneData(root);
     // viewer.setCameraManipulator(new osgGA::TrackballManipulator);
 
-    osg::Vec3d eye(100.0, 0.0, 100.0);
-    osg::Vec3d center(-1.0, 0.0, -1.0);
+    osg::Vec3d eye(0.0, 0.0, -50.0);
+    osg::Vec3d center(0.0, 0.0, 0.0);
     osg::Vec3d up(0.0, 1.0, 0.0);
 
-    // viewer.getCamera()->setProjectionMatrix(osg::Matrix::perspective(1, 1, 0.1, 500));
+    double height = osg::DisplaySettings::instance()->getScreenHeight();
+    double width = osg::DisplaySettings::instance()->getScreenWidth();
+
     viewer.getCamera()->setViewMatrixAsLookAt(eye, center, up);
+    //viewer.getCamera()->setProjectionMatrix(
+    //  osg::Matrix::perspective(0.785398f, width / height, 0.1f, 100.0f)
+    //);
+
     viewer.addEventHandler(new KeyboardHandler(inputState));
     viewer.addEventHandler(new osgViewer::StatsHandler);
 
-    viewer.realize();
+    //viewer.realize();
   }
 
+  // TODO create own class for stats display
   osg::Camera* createHUDCamera( double left, double right, double bottom, double top )
   {
     osg::ref_ptr<osg::Camera> camera = new osg::Camera;
@@ -162,7 +175,7 @@ private:
     //polyMode->setMode(osg::PolygonMode::FRONT_AND_BACK, osg::PolygonMode::LINE);
     //ss->setAttribute(polyMode);
 
-    osg::ref_ptr<osg::Sphere> sphere = (new osg::Sphere(osg::Vec3(0, 0, 0), 1.0));
+    osg::ref_ptr<osg::Sphere> sphere = (new osg::Sphere(osg::Vec3(0, 0, 0), 5.0));
     osg::ref_ptr<osg::ShapeDrawable> drawableSphere = (new osg::ShapeDrawable(sphere));
 
     child = CreateSubGraph(root, drawableSphere, 0.0);

@@ -9,8 +9,6 @@
 
 using namespace std;
 
-namespace fs {
-
 class InputState {
 
 private:
@@ -32,7 +30,5 @@ public:
 
   void updatePosition();
 };
-
-} // namespace fs
 
 #endif

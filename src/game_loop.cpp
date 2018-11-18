@@ -7,8 +7,6 @@
 
 using namespace std;
 
-namespace fs {
-
 void Game::startLoop() {
   using clock = std::chrono::high_resolution_clock;
 
@@ -21,7 +19,7 @@ void Game::startLoop() {
     auto frame_start = clock::now();
     auto time_now = frame_start;
     std::chrono::duration<float> delta;
-
+    
     while (time_now - frame_start < timestep) {
       typedef std::chrono::nanoseconds ns;
       ns d = std::chrono::duration_cast<ns>(delta);
@@ -39,5 +37,3 @@ void Game::startLoop() {
     render();
   }
 }
-
-} // namespace fs

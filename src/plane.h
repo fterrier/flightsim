@@ -4,27 +4,30 @@
 #include "fs_math.h"
 #include "simulation.h"
 
-namespace fs {
-
 struct Controls {
   double throttle;
 };
 
 class Plane : public BasicObject {
 public:
-  void updateControls(const fs::InputState &state, double intervalNs);
+  void updateControls(const InputState &state, double intervalNs);
   void updateVelocity(double intervalNs);
   Controls* getControls();
-
+  
 private:
+  // plane state
   Controls controls;
   double _power = 1;
-  double _weight = 1;
+
   void updatePower();
+  double calculateLiftCoefficient();
+  Vector3 calculateLift(Vector3 velocity);
+
+  // plane physical properties
+  double _weight = 1;
+  double _wingArea = 14.9; // m2
 };
 
-void updatePlaneSimulation(const fs::InputState &inputState, fs::Plane &plane, double intervalNs);
-
-} // namespace fs
+void updatePlaneSimulation(const InputState &inputState, Plane &plane, double intervalNs);
 
 #endif

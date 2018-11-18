@@ -6,8 +6,6 @@
 
 using namespace std;
 
-namespace fs {
-
 class Game {
 public:
   virtual bool done() { return false; };
@@ -16,7 +14,5 @@ public:
 
   void startLoop();
 };
-
-} // namespace fs
 
 #endif
