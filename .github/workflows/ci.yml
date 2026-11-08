@@ -22,3 +22,14 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+
+  # Line coverage must stay >= 95% (see AGENTS.md). main.rs is the untestable
+  # window/drawing shell and must contain no logic, so it is excluded.
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - run: cargo llvm-cov --workspace --fail-under-lines 95 --ignore-filename-regex 'crates/app/src/main\.rs'

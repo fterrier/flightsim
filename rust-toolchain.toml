@@ -2,5 +2,5 @@
 # this toolchain automatically, so every machine (and CI) builds the same way.
 [toolchain]
 channel = "1.99.1"
-components = ["rustfmt", "clippy"]
+components = ["rustfmt", "clippy", "llvm-tools"]
 profile = "minimal"

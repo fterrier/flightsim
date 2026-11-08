@@ -54,14 +54,20 @@ Prerequisite: [rustup](https://rustup.rs). The exact Rust version is pinned
 in `rust-toolchain.toml` and installed automatically on first build.
 
 ```sh
-cargo run -p app                                     # run the simulator
-cargo test --workspace                               # run all tests
-cargo fmt --all                                      # format code
+cargo run -p app                                       # run the simulator
+cargo test --workspace                                 # run all tests
+cargo fmt --all                                        # format code
 cargo clippy --workspace --all-targets -- -D warnings  # lint
+cargo llvm-cov --workspace --ignore-filename-regex 'crates/app/src/main\.rs'  # coverage
 ```
 
+Coverage needs `cargo install cargo-llvm-cov` once.
+
 CI (`.github/workflows/ci.yml`) runs `fmt --check`, `clippy` and `test` on
-Linux and macOS for every push.
+Linux and macOS, and enforces ≥ 95% line coverage, on every push.
+
+Development practices (TDD, coverage, what to run before committing) are in
+[AGENTS.md](AGENTS.md).
 
 ## History
 

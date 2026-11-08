@@ -12,7 +12,7 @@ git checkout step-01            # the code as it was after step 1
 
 | | Step | You'll see | Concepts |
 |---|---|---|---|
-| ✅ | **0. Harness** | `cargo test` green locally and in CI | Cargo workspace, pinned toolchain, CI (fmt, clippy, test) |
+| ✅ | **0. Harness** | `cargo test` green locally and in CI | Cargo workspace, pinned toolchain, CI (fmt, clippy, test, ≥ 95% coverage), TDD workflow (AGENTS.md) |
 | ⬜ | **1. Window + game loop** | A dot moving at constant speed; FPS and sim-time overlay; keys to simulate slow frames | Fixed-timestep accumulator, update vs render, spiral of death |
 | ⬜ | **2. Falling ball** | A ball drops and stops on the ground | Numerical integration (semi-implicit Euler), testing against an analytic solution |
 | ⬜ | **3. 2D point-mass plane** (side view) | Throttle and pitch keys; the plane rolls, lifts off, climbs, stalls | Lift, drag, thrust, weight, air density, angle of attack |
