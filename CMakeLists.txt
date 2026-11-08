@@ -19,12 +19,11 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR})
 # move to source
 
 hunter_add_package(spdlog)
+
 find_package(spdlog CONFIG REQUIRED)
-
-# hunter_add_package(SDL2)
-# find_package(SDL2 CONFIG REQUIRED)
-
-find_package(OpenSceneGraph REQUIRED COMPONENTS osgDB osgGA osgUtil osgViewer osgText osgFX osgShadow osgParticle)
+find_package(GLFW3 REQUIRED)
+find_package(Magnum REQUIRED GL Shaders MeshTools Primitives)
+find_package(Magnum REQUIRED CglContext)
 
 add_executable(flightsim src/main.cpp)
 
@@ -42,28 +41,18 @@ target_compile_features(flightsim_lib PRIVATE cxx_lambdas)
 target_compile_features(flightsim PRIVATE cxx_lambdas)
 
 target_include_directories(flightsim_lib PUBLIC src/)
-target_include_directories(flightsim_lib PUBLIC /usr/local/include/)
 
-target_link_libraries(flightsim_lib PUBLIC spdlog::spdlog
-  #SDL2::SDL2
-  )
-target_link_libraries(flightsim PUBLIC
+target_link_libraries(flightsim_lib PUBLIC spdlog::spdlog)
+target_link_libraries(flightsim PRIVATE
+
   flightsim_lib
-
-  PUBLIC
-
-  # if using include
-  #OpenSceneGraph
-  #OpenThreads
-  #osgDB osgGA osgUtil osgViewer
-  # if using find_package
-  ${OPENSCENEGRAPH_LIBRARIES}
-  ${OPENTHREADS_LIBRARIES}
-  ${OSG_LIBRARIES}
-  )
-# end
-
-message(${OPENSCENEGRAPH_INCLUDE_DIR})
+  glfw
+  Magnum::GL
+  Magnum::GLContext
+  Magnum::MeshTools
+  Magnum::Primitives
+  Magnum::Magnum
+  Magnum::Shaders)
 
 enable_testing()
 add_subdirectory(test)

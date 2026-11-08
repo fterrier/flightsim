@@ -5,7 +5,7 @@
 // auto console = spdlog::stdout_logger_mt("plane");
 
 const double rho = 1.225; // kg/m3
-const Vector3 gravityVector = Vector3{0, -1.0F, 0};
+const fs::Vector3 gravityVector = fs::Vector3{0, -1.0F, 0};
 const double gravity = 9.81;
 
 // from input to control
@@ -38,9 +38,9 @@ double Plane::calculateLiftCoefficient() {
   return 5;
 }
 
-Vector3 Plane::calculateLift(Vector3 velocity) {
+fs::Vector3 Plane::calculateLift(fs::Vector3 velocity) {
   // 1/2 * rho * v^2 * S * Cl - along y axis
-  return Vector3{0, 1, 0} * (1/2) * rho * _wingArea
+  return fs::Vector3{0, 1, 0} * (1/2) * rho * _wingArea
                           * calculateLiftCoefficient()
                           * (velocity.x * velocity.x);
 }
@@ -49,10 +49,10 @@ void Plane::updateVelocity(double intervalNs) {
 
   updatePower();
 
-  Vector3 thrust = Vector3{0, 0, _power};
-  Vector3 weight = gravityVector * gravity * _weight;
-  Vector3 lift = calculateLift(velocity);
-  Vector3 drag = Vector3{0, 0, 0};
+  fs::Vector3 thrust = fs::Vector3{0, 0, _power};
+  fs::Vector3 weight = gravityVector * gravity * _weight;
+  fs::Vector3 lift = calculateLift(velocity);
+  fs::Vector3 drag = fs::Vector3{0, 0, 0};
 
   velocity = (weight + lift + thrust + drag) * 1e-10 * intervalNs;
 }

@@ -1,5 +1,7 @@
 #include "fs_math.h"
 
+namespace fs {
+
 Vector3 Vector3::operator-(const Vector3 &rhs) const {
   return Vector3{x - rhs.x, y - rhs.y, z - rhs.z};
 }
@@ -27,4 +29,6 @@ bool Vector3::operator!=(const Vector3 &rhs) const {
 std::ostream &operator<<(std::ostream &strm, const Vector3 &rhs) {
   strm << "(" << rhs.x << "," << rhs.y << "," << rhs.z << ")";
   return strm;
+}
+
 }

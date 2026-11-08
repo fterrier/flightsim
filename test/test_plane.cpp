@@ -21,7 +21,7 @@ TEST(PlaneModelTest, StraightAndLevelTest)
   // parameters
   //plane.setPower(2500);
 
-  Vector3 forward{1,0,0};
+  fs::Vector3 forward{1,0,0};
   // velocity does not change under conditions for straight and level flight
   updatePlaneSimulation(InputState(), plane, 1e9);
 

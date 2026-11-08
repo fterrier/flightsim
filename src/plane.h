@@ -21,7 +21,7 @@ private:
 
   void updatePower();
   double calculateLiftCoefficient();
-  Vector3 calculateLift(Vector3 velocity);
+  fs::Vector3 calculateLift(fs::Vector3 velocity);
 
   // plane physical properties
   double _weight = 1;

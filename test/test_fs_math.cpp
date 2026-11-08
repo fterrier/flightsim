@@ -1,10 +1,11 @@
 #include "gtest/gtest.h"
 #include "fs_math.h"
 
+using namespace fs;
+
 Vector3 forward{1,0,0};
 Vector3 side{0,0,1};
 Vector3 up{0,1,0};
-
 
 TEST(Vector3Test, Equal)
 {

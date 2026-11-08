@@ -25,8 +25,8 @@ public:
 class BasicObject {
 
 public:
-  Vector3 velocity;
-  Vector3 position;
+  fs::Vector3 velocity;
+  fs::Vector3 position;
 
   void updatePosition();
 };

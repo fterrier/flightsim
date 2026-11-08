@@ -3,6 +3,7 @@
 
 #include <iostream>
 
+namespace fs {
 class Vector3 {
 public:
   double x;
@@ -24,5 +25,6 @@ public:
   Vector3 moment();
   double arm();
 };
+}
 
 #endif
