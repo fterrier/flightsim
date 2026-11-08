@@ -11,9 +11,14 @@ mod view;
 use std::thread;
 use std::time::Duration;
 
-use macroquad::prelude::*;
-// macroquad's prelude has its own (older) DVec2; this explicit import wins,
-// so DVec2 here is the physics one.
+// Everything graphics-related comes from macroquad, imported explicitly so
+// you can see which module each function lives in.
+use macroquad::color::{Color, GRAY, ORANGE, WHITE};
+use macroquad::input::{KeyCode, is_key_down, is_key_pressed};
+use macroquad::shapes::{draw_circle, draw_line};
+use macroquad::text::draw_text;
+use macroquad::time::{get_fps, get_frame_time};
+use macroquad::window::{Conf, clear_background, next_frame, screen_height, screen_width};
 use physics::{Body, DVec2, World};
 use timestep::FixedTimestep;
 use view::View;
@@ -38,6 +43,21 @@ fn window_conf() -> Conf {
     }
 }
 
+// This attribute is where the window comes from. It's a macro: at compile
+// time it renames this function and generates the real `fn main()`, which
+// calls `macroquad::Window::from_config(window_conf(), <this function>)`.
+// That:
+// 1. opens the OS window and GPU context (through miniquad, macroquad's
+//    lower layer), sized and titled by `window_conf()` above;
+// 2. stores the drawing state in a global, which is why `draw_line(...)`
+//    needs no window handle;
+// 3. runs this `async fn` as a coroutine. Each `next_frame().await` hands
+//    control back to the OS event loop, which presents the frame, processes
+//    events (keys, resize, close) and resumes us on the next frame.
+// So the OS event loop really drives us; `async` just lets our side read
+// like a plain `loop {}`.
+// TODO(later): with our own wgpu renderer we create the window ourselves
+// (winit) and own the event loop explicitly.
 #[macroquad::main(window_conf)]
 async fn main() {
     let mut world = World::new(Body {
