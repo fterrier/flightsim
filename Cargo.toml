@@ -15,6 +15,13 @@ publish = false
 physics = { path = "crates/physics" }
 # 2D/3D vector maths (f64 types like DVec2 for physics).
 glam = "0.34"
-# Window, input and simple drawing. Audio is disabled: not needed, and on
-# Linux it would require ALSA system libraries to build.
-macroquad = { version = "0.4", default-features = false }
+# Window, input and rendering (2D now, 3D + glTF models later), on wgpu.
+# Pre-1.0 with breaking releases every few months: upgrade deliberately.
+# See ROADMAP.md "Graphics" for why this library.
+kiss3d = "0.47"
+
+# Dependencies (wgpu, image decoding...) are slow when unoptimised; compile
+# them with optimisations even in debug builds. Our own code stays
+# unoptimised so it compiles fast and is easy to debug.
+[profile.dev.package."*"]
+opt-level = 2

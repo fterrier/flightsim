@@ -1,27 +1,29 @@
-//! The window shell: opens the window, reads the keyboard, runs the game
-//! loop and draws.
+//! The window shell: opens the window, reads the keyboard and the clock,
+//! runs the game loop and draws.
 //!
 //! No logic lives here, because this file can't be tested in CI (no
-//! display). Timing is in `timestep`, what-goes-where in `view`, and the
+//! display). Timing is in `timestep`, what-to-show-where in `view`, and the
 //! simulation itself in the `physics` crate.
 
 mod timestep;
 mod view;
 
+use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-// Everything graphics-related comes from macroquad, imported explicitly so
-// you can see which module each function lives in.
-use macroquad::color::{Color, GRAY, ORANGE, WHITE};
-use macroquad::input::{KeyCode, is_key_down, is_key_pressed};
-use macroquad::shapes::{draw_circle, draw_line};
-use macroquad::text::draw_text;
-use macroquad::time::{get_fps, get_frame_time};
-use macroquad::window::{Conf, clear_background, next_frame, screen_height, screen_width};
+// Everything graphics-related comes from kiss3d, imported explicitly so you
+// can see which module each item lives in. `Vec2` is kiss3d's f32 vector
+// (glam, via kiss3d's `glamx` wrapper); physics uses its own f64 `DVec2`.
+use kiss3d::camera::PanZoomCamera2d;
+use kiss3d::color::{Color, GRAY, WHITE};
+use kiss3d::event::{Action, Key};
+use kiss3d::glamx::Vec2;
+use kiss3d::scene::SceneNode2d;
+use kiss3d::text::Font;
+use kiss3d::window::Window;
 use physics::{Body, DVec2, World};
 use timestep::FixedTimestep;
-use view::View;
 
 /// Physics runs at this fixed rate, whatever the display's frame rate.
 const PHYSICS_HZ: f64 = 120.0;
@@ -34,95 +36,143 @@ const SLOW_FRAME: Duration = Duration::from_millis(50);
 /// extra time is dropped and sim time falls behind real time.
 const STALLED_FRAME: Duration = Duration::from_millis(400);
 
-fn window_conf() -> Conf {
-    Conf {
-        window_title: "flightsim".to_owned(),
-        window_width: 1280,
-        window_height: 720,
-        ..Default::default()
-    }
-}
+// Colours are in *linear* light: kiss3d converts them to sRGB (what screens
+// expect) when drawing, which brightens dark values a lot. Linear 0.01 shows
+// as about 10% grey, not 1%. So dark colours need small numbers here.
+const BACKGROUND: Color = Color::new(0.006, 0.008, 0.015, 1.0);
+const DOT: Color = Color::new(1.0, 0.25, 0.0, 1.0);
 
-// This attribute is where the window comes from. It's a macro: at compile
-// time it renames this function and generates the real `fn main()`, which
-// calls `macroquad::Window::from_config(window_conf(), <this function>)`.
-// That:
-// 1. opens the OS window and GPU context (through miniquad, macroquad's
-//    lower layer), sized and titled by `window_conf()` above;
-// 2. stores the drawing state in a global, which is why `draw_line(...)`
-//    needs no window handle;
-// 3. runs this `async fn` as a coroutine. Each `next_frame().await` hands
-//    control back to the OS event loop, which presents the frame, processes
-//    events (keys, resize, close) and resumes us on the next frame.
-// So the OS event loop really drives us; `async` just lets our side read
-// like a plain `loop {}`.
-// TODO(later): with our own wgpu renderer we create the window ourselves
-// (winit) and own the event loop explicitly.
-#[macroquad::main(window_conf)]
+/// Radius of the dot, in metres (it's a world-space object).
+const DOT_RADIUS: f32 = 0.4;
+
+// `#[kiss3d::main]` generates the real `fn main()`. On desktop it simply
+// runs this async function to completion (`pollster::block_on`), and
+// `render_2d(...).await` returns as soon as one frame is drawn: the loop
+// below really is ours, running on the main thread. The `async` only exists
+// so the same code can run in a browser, where the browser owns the loop.
+#[kiss3d::main]
 async fn main() {
+    // Opens the OS window and sets up the GPU (wgpu: Metal on macOS,
+    // Vulkan/DX12 elsewhere).
+    let mut window = Window::new_with_size("flightsim", 1280, 720).await;
+    window.set_background_color(BACKGROUND);
+    let font = Font::default();
+    let scale = window.scale_factor() as f32;
+
+    // The camera maps world space (metres, y up) to the screen. Its zoom is
+    // in physical pixels per metre; the mouse wheel changes it. Mouse-drag
+    // panning is turned off because the camera follows the dot.
+    let mut camera = PanZoomCamera2d::new(Vec2::ZERO, view::initial_zoom(scale));
+    camera.rebind_drag_button(None);
+
+    // The *scene*: objects kiss3d keeps between frames (retained mode),
+    // positioned in world space. The dot is a "render proxy": a visual
+    // stand-in for the physics body, kept in sync by `sync_scene`.
+    let mut scene = SceneNode2d::empty();
+    let mut dot = scene.add_circle(DOT_RADIUS).set_color(DOT);
+
     let mut world = World::new(Body {
         position: DVec2::new(0.0, 2.0),
         velocity: DVec2::new(10.0, 0.0),
     });
     let mut clock = FixedTimestep::new(1.0 / PHYSICS_HZ);
+    let mut last_frame = Instant::now();
 
-    // The game loop: one iteration per displayed frame.
-    loop {
-        // 1. Input
-        if is_key_pressed(KeyCode::Escape) {
+    // The game loop: one iteration per displayed frame. The body prepares
+    // a frame; the `while` condition then draws it on screen.
+    while window.render_2d(&mut scene, &mut camera).await {
+        // 1. Clock: how much real time did the last frame take?
+        let now = Instant::now();
+        let frame_time = (now - last_frame).as_secs_f64();
+        last_frame = now;
+
+        // 2. Input
+        if window.get_key(Key::Escape) == Action::Press {
             break;
         }
         // TODO(step-03): read throttle and pitch keys into controls and pass
         // them to `world.step`.
-        if is_key_down(KeyCode::L) {
+        if window.get_key(Key::L) == Action::Press {
             thread::sleep(SLOW_FRAME);
         }
-        if is_key_down(KeyCode::K) {
+        if window.get_key(Key::K) == Action::Press {
             thread::sleep(STALLED_FRAME);
         }
 
-        // 2. Update: as many fixed steps as the elapsed real time calls for.
-        // At 60 FPS that's 2 steps per frame; at 144 FPS sometimes 0 or 1.
-        let steps = clock.advance(get_frame_time() as f64);
+        // 3. Update physics: as many fixed steps as the elapsed real time
+        // calls for. At 60 FPS that's 2 steps per frame; at 144 FPS
+        // sometimes 0 or 1.
+        let steps = clock.advance(frame_time);
         for _ in 0..steps {
             // TODO(step-07): keep a copy of the previous state here so the
             // renderer can interpolate between the last two physics states.
             world.step(clock.dt());
         }
 
-        // 3. Render: reads the world, never changes it.
-        draw(&world, &clock, steps);
-        next_frame().await;
+        // 4. Physics -> scene (see `sync_scene` below).
+        sync_scene(&world, &mut dot, &mut camera);
+
+        // 5. Debug drawing and HUD (immediate mode: re-issued every frame).
+        draw_ruler(&mut window, &camera);
+        draw_hud(&mut window, &font, &world, &clock, steps, frame_time);
     }
 }
 
-fn draw(world: &World, clock: &FixedTimestep, steps: u32) {
-    let view = View::for_screen(screen_width(), screen_height());
-    clear_background(Color::from_rgba(20, 24, 32, 255));
+// ═══════════════════════════════════════════════════════════════════════
+//  PHYSICS -> SCENE
+//
+//  The only place where simulation state flows into graphics. Physics never
+//  knows the scene exists; once per frame we copy what it computed into the
+//  render proxies (and the camera). Everything after this only *reads*.
+//
+//  In 3D it stays the same: body position + orientation -> 3D scene node.
+// ═══════════════════════════════════════════════════════════════════════
+fn sync_scene(world: &World, dot: &mut SceneNode2d, camera: &mut PanZoomCamera2d) {
+    // f64 (physics precision) -> f32 (what GPUs use).
+    // TODO(later): f32 only has ~7 significant digits: at 100 km from the
+    // origin, positions snap to ~1 cm steps and the picture jitters. The
+    // usual fix is a "floating origin": subtract the camera position in f64
+    // *before* converting, so the GPU only sees small numbers.
+    let position = world.dot.position;
+    dot.set_position(Vec2::new(position.x as f32, position.y as f32));
 
-    // Ground and distance ruler.
-    draw_line(0.0, view.ground_y, screen_width(), view.ground_y, 2.0, GRAY);
-    for tick in view.ruler_ticks() {
-        draw_line(
-            tick.x,
-            view.ground_y,
-            tick.x,
-            view.ground_y + tick.length,
-            1.0,
-            GRAY,
-        );
-        if let Some(label) = tick.label {
-            draw_text(&label, tick.x + 3.0, view.ground_y + 28.0, 18.0, GRAY);
-        }
+    let target = view::camera_target(position);
+    camera.set_at(Vec2::new(target.x as f32, target.y as f32));
+}
+
+/// Ground line and distance ruler, in world space (metres).
+fn draw_ruler(window: &mut Window, camera: &PanZoomCamera2d) {
+    let (from, to) =
+        view::visible_x_range(camera.at().x as f64, window.width() as f32, camera.zoom());
+    let line_width = 2.0; // in pixels, whatever the zoom
+    let point = |x: f64, y: f64| Vec2::new(x as f32, y as f32);
+
+    window.draw_line_2d(point(from, 0.0), point(to, 0.0), GRAY, line_width);
+    for tick in view::ruler_ticks(from, to) {
+        let (top, bottom) = (point(tick.x, 0.0), point(tick.x, -tick.length));
+        window.draw_line_2d(top, bottom, GRAY, line_width);
     }
+}
 
-    let (x, y) = view.to_screen(world.dot.position);
-    draw_circle(x, y, 8.0, ORANGE);
-
-    for (i, line) in view::overlay_lines(world, clock, steps, get_fps())
-        .iter()
-        .enumerate()
-    {
-        draw_text(line, 12.0, 28.0 + 24.0 * i as f32, 24.0, WHITE);
+/// Text overlay, in screen space (physical pixels, top-left origin).
+fn draw_hud(
+    window: &mut Window,
+    font: &Arc<Font>,
+    world: &World,
+    clock: &FixedTimestep,
+    steps: u32,
+    frame_time: f64,
+) {
+    let scale = window.scale_factor() as f32;
+    let lines = view::overlay_lines(world, clock, steps, frame_time);
+    for (i, line) in lines.iter().enumerate() {
+        let (x, y) = view::hud_line_position(i, scale);
+        window.draw_text(
+            line,
+            Vec2::new(x, y),
+            view::hud_font_size(scale),
+            font,
+            WHITE,
+        );
     }
 }

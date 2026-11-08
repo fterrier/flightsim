@@ -13,7 +13,7 @@ git checkout step-01            # the code as it was after step 1
 | | Step | You'll see | Concepts |
 |---|---|---|---|
 | ✅ | **0. Harness** | `cargo test` green locally and in CI | Cargo workspace, pinned toolchain, CI (fmt, clippy, test, ≥ 95% coverage), TDD workflow (AGENTS.md) |
-| ✅ | **1. Window + game loop** | A dot moving at constant speed; FPS and sim-time overlay; keys to simulate slow frames | Fixed-timestep accumulator, update vs render, spiral of death |
+| ✅ | **1. Window + game loop** | A dot moving at constant speed, followed by the camera; FPS and sim-time overlay; keys to simulate slow frames | Fixed-timestep accumulator, update vs render, spiral of death, world vs screen space, camera, retained scene + render proxies |
 | ⬜ | **2. Falling ball** | A ball drops and stops on the ground | Numerical integration (semi-implicit Euler), testing against an analytic solution |
 | ⬜ | **3. 2D point-mass plane** (side view) | Throttle and pitch keys; the plane rolls, lifts off, climbs, stalls | Lift, drag, thrust, weight, air density, angle of attack |
 | ⬜ | **4. 2D plane that rotates** | Pitch is now a dynamic state driven by the elevator; the plane settles at its own trim attitude | Moments, moment of inertia, static stability (the tail), trim |
@@ -27,8 +27,10 @@ git checkout step-01            # the code as it was after step 1
 
 - Engine (Lycoming O-235) and fixed-pitch propeller model
 - Wind, gusts, turbulence (Dryden model)
-- Our own GPU renderer with `wgpu` (meshes, camera, lighting, glTF models)
-- Instruments / HUD (`egui`)
+- Our own 3D models (glTF from Blender), loaded with kiss3d
+- Instruments / HUD (`egui`, built into kiss3d)
+- Physics plots in-window (`egui_plot`)
+- Floating origin (render relative to the camera) once we fly far from the origin
 - Gamepad and joystick input
 - A second flight model: blade element (geometry-based, like X-Plane)
 - Round earth (WGS84), real terrain elevation
@@ -50,7 +52,10 @@ Rules:
    a whole number of fixed steps, then draws.
 3. **Rendering only reads** simulation state, never writes it.
 4. **New crates only when a boundary hurts.** Likely future splits:
-   `aircraft` (data loading), `collision`, `render` (wgpu).
+   `aircraft` (data loading), `collision`.
+5. **Physics → scene in one place.** Graphics keep *render proxies*
+   (scene nodes) for simulated objects; once per frame, a single sync
+   function copies physics state into them (`sync_scene` in `main.rs`).
 
 ## Decisions
 
@@ -64,14 +69,29 @@ drag) doesn't trigger an endless catch-up ("spiral of death"). Later
 This makes the simulation deterministic: same inputs, same flight.
 Reference: Glenn Fiedler, *Fix Your Timestep!*
 
-### Graphics: macroquad now, wgpu later
+### Graphics: kiss3d (on wgpu)
 
-[macroquad](https://github.com/not-fl3/macroquad) is a small immediate-mode
-library (raylib-like): draw a line, draw a cube, done. It compiles fast and
-does enough 2D and basic 3D for the physics steps. Writing our own `wgpu`
-renderer is a later learning milestone of its own. Full engines (Bevy,
-Fyrox) were rejected: they own the game loop and the world, which is what we
-want to learn to build.
+Requirements: we own the game loop and the world; we don't reimplement
+rendering; performant (natively on Metal on macOS, where OpenGL is
+deprecated and frozen at 4.1); loads our own 3D models (glTF, OBJ) later.
+
+[kiss3d](https://github.com/dimforge/kiss3d) (0.47, rewritten on `wgpu` in
+2026 by Dimforge, the makers of the Rapier physics engine, who use it for
+their own physics viewers) fits all of them: explicit loop
+(`while window.render_3d(..).await`), 2D and 3D scenes, glTF/OBJ loading,
+instancing, PBR, shadows, text and built-in `egui`.
+
+Rejected (Nov 2026 audit): **macroquad** (maintenance mode, open soundness
+advisory, OpenGL, minimal 3D; used for the first draft of step 1),
+**egui/eframe alone** (2D UI only: 3D would mean writing our own wgpu
+renderer), **raw winit + wgpu** (reimplementing rendering), **three-d** and
+**raylib** (OpenGL), **Bevy**, **Fyrox**, **Godot** (they own the loop and
+the world: what this project is meant to teach), **rend3** (archived).
+Escape hatch if we ever need city-scale scenery: Bevy or Godot; the
+`physics` crate moves over unchanged.
+
+Risk: pre-1.0, breaking releases every few months. The version is pinned;
+upgrades are deliberate.
 
 ### Flight model: coefficient-based first
 
@@ -134,4 +154,5 @@ harder to read. So:
 - Glenn Fiedler, [Fix Your Timestep!](https://gafferongames.com/post/fix_your_timestep/)
 - Robert Nystrom, [Game Programming Patterns](https://gameprogrammingpatterns.com/)
   (Game Loop, Component chapters)
-- [Learn Wgpu](https://sotrh.github.io/learn-wgpu/) for the later renderer
+- [kiss3d examples](https://github.com/dimforge/kiss3d/tree/master/examples):
+  one small file per feature (glTF, instancing, shadows, text, egui...)

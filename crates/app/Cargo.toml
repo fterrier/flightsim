@@ -13,4 +13,4 @@ path = "src/main.rs"
 
 [dependencies]
 physics.workspace = true
-macroquad.workspace = true
+kiss3d.workspace = true

@@ -1,84 +1,109 @@
-//! What to draw where: converts simulation coordinates (metres, y up) into
-//! screen pixels (y down) and prepares the text overlay.
+//! What to show where. Pure functions with no graphics calls, so they can
+//! be unit tested without opening a window; `main.rs` does the drawing.
 //!
-//! Pure functions with no graphics calls, so they can be unit tested
-//! without opening a window. `main.rs` does the actual drawing.
+//! Two coordinate spaces are in play, as in every game engine:
+//! - **World space**: metres, x right, y up, same as physics. The scene
+//!   (dot, ground, ruler) lives here, and the *camera* decides which part
+//!   of the world appears on screen, and how big.
+//! - **Screen space**: pixels, origin top-left, y down. Only the HUD (the
+//!   text overlay) lives here: it stays put whatever the camera does.
+//!
+//! Screen sizes are *physical* pixels. A HiDPI ("Retina") display has
+//! `scale` = 2 physical pixels per logical pixel in each direction, so
+//! sizes are designed in logical pixels and multiplied by `scale`.
 
 use crate::timestep::FixedTimestep;
 use physics::{DVec2, World};
 
-/// Zoom level: how many screen pixels one metre takes.
+/// Starting zoom: logical pixels per metre. Scroll to zoom in/out.
 const PIXELS_PER_METRE: f32 = 20.0;
 
-/// Maps the world onto the screen. Rebuilt every frame, so window resizes
-/// are picked up automatically.
-// TODO(step-03): replace the wrap-around with a camera that follows the
-// plane (the view gets a centre position in metres).
-pub struct View {
-    pub pixels_per_metre: f32,
-    pub screen_width: f32,
-    /// Screen y of the ground line (y = 0 m), in pixels.
-    pub ground_y: f32,
+/// The camera looks at this height (metres), so the ground sits in the
+/// lower part of the screen.
+const CAMERA_HEIGHT: f64 = 8.0;
+
+/// Ruler tick lengths, in metres (they're world-space objects).
+const MAJOR_TICK: f64 = 1.0;
+const MINOR_TICK: f64 = 0.4;
+
+/// Starting camera zoom, in physical pixels per metre.
+pub fn initial_zoom(scale: f32) -> f32 {
+    PIXELS_PER_METRE * scale
 }
 
-/// One mark of the distance ruler drawn along the ground.
+/// Where the camera looks: it follows the target horizontally, but stays
+/// at a fixed height so the ground remains in view.
+// TODO(step-03): once the plane climbs, follow it vertically too.
+pub fn camera_target(target: DVec2) -> DVec2 {
+    DVec2::new(target.x, CAMERA_HEIGHT)
+}
+
+/// The world x range visible on screen, in metres, for a camera centred on
+/// `centre_x` (metres) with `zoom` (pixels per metre) on a screen
+/// `screen_width` pixels wide.
+pub fn visible_x_range(centre_x: f64, screen_width: f32, zoom: f32) -> (f64, f64) {
+    let half_width = (screen_width / zoom / 2.0) as f64;
+    (centre_x - half_width, centre_x + half_width)
+}
+
+/// One mark of the distance ruler drawn along the ground (world space).
 pub struct Tick {
-    /// Screen x, in pixels.
-    pub x: f32,
-    /// Length of the mark, in pixels.
-    pub length: f32,
-    /// Distance label, only on every 10th metre.
-    pub label: Option<String>,
+    /// Position along the ground, in metres.
+    pub x: f64,
+    /// How far the mark extends below the ground, in metres.
+    pub length: f64,
 }
 
-impl View {
-    pub fn for_screen(width: f32, height: f32) -> Self {
-        Self {
-            pixels_per_metre: PIXELS_PER_METRE,
-            screen_width: width,
-            ground_y: height * 0.6,
-        }
-    }
-
-    /// Screen position (pixels) of a world position (metres).
-    ///
-    /// x wraps around the screen width so a moving object stays visible.
-    pub fn to_screen(&self, position: DVec2) -> (f32, f32) {
-        // Wrap in f64 *before* converting: f32 loses sub-pixel precision
-        // once positions reach a few kilometres.
-        let x = (position.x * self.pixels_per_metre as f64).rem_euclid(self.screen_width as f64);
-        let y = self.ground_y - position.y as f32 * self.pixels_per_metre;
-        (x as f32, y)
-    }
-
-    /// One tick per metre across the screen, longer and labelled every 10 m.
-    pub fn ruler_ticks(&self) -> Vec<Tick> {
-        let metres_across = (self.screen_width / self.pixels_per_metre) as u32;
-        (0..=metres_across)
-            .map(|m| {
-                let major = m % 10 == 0;
-                Tick {
-                    x: m as f32 * self.pixels_per_metre,
-                    length: if major { 12.0 } else { 5.0 },
-                    label: major.then(|| format!("{m} m")),
-                }
-            })
-            .collect()
-    }
+/// One tick per whole metre between `from` and `to` (metres), longer
+/// every 10 m. Only the visible part of the ruler is generated.
+pub fn ruler_ticks(from: f64, to: f64) -> Vec<Tick> {
+    (from.ceil() as i64..=to.floor() as i64)
+        .map(|m| Tick {
+            x: m as f64,
+            // rem_euclid, not %: -10 % 10 is 0 but -3 % 10 is -3 in Rust.
+            length: if m.rem_euclid(10) == 0 {
+                MAJOR_TICK
+            } else {
+                MINOR_TICK
+            },
+        })
+        .collect()
 }
 
-/// Debug text shown in the top-left corner.
+/// HUD text size, in physical pixels.
+pub fn hud_font_size(scale: f32) -> f32 {
+    22.0 * scale
+}
+
+/// Screen position (physical pixels) of HUD text line number `line`.
+pub fn hud_line_position(line: usize, scale: f32) -> (f32, f32) {
+    (12.0 * scale, (12.0 + 26.0 * line as f32) * scale)
+}
+
+/// HUD text lines, top to bottom.
 ///
 /// Watch "sim time" vs "real time": they stay equal at any frame rate,
 /// until frames exceed `MAX_FRAME_TIME` and the simulation falls behind.
-pub fn overlay_lines(world: &World, clock: &FixedTimestep, steps: u32, fps: i32) -> Vec<String> {
+///
+/// `frame_time` is the duration of the last frame, in seconds.
+pub fn overlay_lines(
+    world: &World,
+    clock: &FixedTimestep,
+    steps: u32,
+    frame_time: f64,
+) -> Vec<String> {
+    let fps = if frame_time > 0.0 {
+        format!("{:.0}", 1.0 / frame_time)
+    } else {
+        "--".to_owned()
+    };
     vec![
         format!("{fps} FPS"),
         format!("{steps} physics steps this frame"),
         format!("sim time  {:5.2} s", world.time),
         format!("real time {:5.2} s", clock.real_time()),
         format!("x = {:.1} m", world.dot.position.x),
-        "hold L: slow frames | hold K: stalled frames | Esc: quit".to_owned(),
+        "hold L: slow frames | hold K: stalled frames | scroll: zoom | Esc: quit".to_owned(),
     ]
 }
 
@@ -87,44 +112,50 @@ mod tests {
     use super::*;
     use physics::Body;
 
-    /// A 400 x 300 px screen at 20 px/m: 20 m wide, ground at y = 180 px.
-    fn view() -> View {
-        View::for_screen(400.0, 300.0)
+    #[test]
+    fn camera_follows_the_target_horizontally_at_a_fixed_height() {
+        let target = camera_target(DVec2::new(123.0, 2.0));
+        assert_eq!(target, DVec2::new(123.0, CAMERA_HEIGHT));
     }
 
     #[test]
-    fn ground_is_at_sixty_percent_of_screen_height() {
-        assert_eq!(view().ground_y, 180.0);
+    fn visible_range_is_centred_on_the_camera() {
+        // 400 px wide at 20 px/m = 20 m across, centred on x = 100 m.
+        assert_eq!(visible_x_range(100.0, 400.0, 20.0), (90.0, 110.0));
     }
 
     #[test]
-    fn origin_is_on_the_ground_at_the_left_edge() {
-        assert_eq!(view().to_screen(DVec2::ZERO), (0.0, 180.0));
+    fn ruler_has_a_tick_on_every_whole_metre_in_range() {
+        let xs: Vec<f64> = ruler_ticks(0.5, 3.2).iter().map(|t| t.x).collect();
+        assert_eq!(xs, [1.0, 2.0, 3.0]);
     }
 
     #[test]
-    fn world_y_up_becomes_screen_y_down() {
-        // 1 m above ground = 20 px *higher* on screen = smaller y.
-        assert_eq!(view().to_screen(DVec2::new(0.0, 1.0)), (0.0, 160.0));
+    fn every_tenth_tick_is_longer_including_negative_ones() {
+        let ticks = ruler_ticks(-10.0, 10.0);
+        assert_eq!(ticks.len(), 21);
+        let long: Vec<f64> = ticks
+            .iter()
+            .filter(|t| t.length == MAJOR_TICK)
+            .map(|t| t.x)
+            .collect();
+        assert_eq!(long, [-10.0, 0.0, 10.0]);
+        const { assert!(MINOR_TICK < MAJOR_TICK) } // checked at compile time
     }
 
     #[test]
-    fn x_wraps_around_the_screen_width() {
-        // The screen is 20 m wide, so 21 m lands where 1 m would.
-        assert_eq!(view().to_screen(DVec2::new(21.0, 0.0)), (20.0, 180.0));
-        // Negative x wraps to the right side.
-        assert_eq!(view().to_screen(DVec2::new(-1.0, 0.0)), (380.0, 180.0));
+    fn hidpi_display_uses_twice_the_physical_pixels() {
+        assert_eq!(initial_zoom(2.0), 2.0 * initial_zoom(1.0));
+        assert_eq!(hud_font_size(2.0), 2.0 * hud_font_size(1.0));
+        let (x, y) = hud_line_position(3, 1.0);
+        assert_eq!(hud_line_position(3, 2.0), (2.0 * x, 2.0 * y));
     }
 
     #[test]
-    fn ruler_has_a_tick_per_metre_and_labels_every_ten() {
-        let ticks = view().ruler_ticks();
-        assert_eq!(ticks.len(), 21); // 0 m ..= 20 m
-        assert_eq!(ticks[0].label.as_deref(), Some("0 m"));
-        assert_eq!(ticks[5].x, 100.0);
-        assert_eq!(ticks[5].label, None);
-        assert!(ticks[5].length < ticks[10].length);
-        assert_eq!(ticks[10].label.as_deref(), Some("10 m"));
+    fn hud_lines_stack_downwards() {
+        let (_, first) = hud_line_position(0, 1.0);
+        let (_, second) = hud_line_position(1, 1.0);
+        assert!(second > first); // screen y grows downwards
     }
 
     #[test]
@@ -140,11 +171,23 @@ mod tests {
             world.step(clock.dt());
         }
 
-        let text = overlay_lines(&world, &clock, steps, 60).join("\n");
+        let text = overlay_lines(&world, &clock, steps, 1.0 / 60.0).join("\n");
         assert!(text.contains("60 FPS"), "{text}");
         assert!(text.contains("16 physics steps this frame"), "{text}");
         assert!(text.contains("sim time   0.25 s"), "{text}");
         assert!(text.contains("real time  0.25 s"), "{text}");
         assert!(text.contains("x = 2.5 m"), "{text}");
+    }
+
+    #[test]
+    fn overlay_has_no_fps_before_the_first_frame_is_timed() {
+        let world = World::new(Body {
+            position: DVec2::ZERO,
+            velocity: DVec2::ZERO,
+        });
+        let clock = FixedTimestep::new(1.0 / 64.0);
+        // A zero frame time would mean "infinite FPS": show a placeholder.
+        let text = overlay_lines(&world, &clock, 0, 0.0).join("\n");
+        assert!(text.contains("-- FPS"), "{text}");
     }
 }
