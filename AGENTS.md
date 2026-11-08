@@ -17,6 +17,32 @@ simplicity** over cleverness or generality.
 - Plain structs and free functions. No traits, generics or new crates until
   a second concrete use exists.
 
+### TODO comments: where future steps plug in
+
+When code will be extended by a later ROADMAP step, leave a `TODO` comment
+at the exact spot, so the reader sees where the system is heading and how
+the pieces will connect:
+
+```rust
+for _ in 0..steps {
+    // TODO(step-07): keep a copy of the previous state here so the renderer
+    // can interpolate between the last two physics states.
+    world.step(clock.dt());
+}
+```
+
+- Format: `// TODO(step-NN): <what plugs in here> [and why here]`. Always
+  name the step from ROADMAP.md, so `grep -rn "TODO(step-07)"` finds every
+  place a step touches.
+- Use `TODO(later)` for items in the ROADMAP "Later" list.
+- Comment only, no placeholder code: no empty functions, stub structs or
+  `todo!()` for future steps. The comment explains; the code stays minimal
+  and fully tested.
+- When implementing a step, find its TODOs first, then remove each one as
+  it's done. A step isn't finished while its TODOs remain.
+- Don't add TODOs for ordinary unfinished work or known bugs in the current
+  step: finish it, or add it to the ROADMAP.
+
 ## Test-driven development
 
 Every change is tested. Work in red-green-refactor cycles:
