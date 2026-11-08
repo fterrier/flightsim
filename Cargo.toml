@@ -13,3 +13,8 @@ publish = false
 # Dependency versions are declared once here, crates refer to them by name.
 [workspace.dependencies]
 physics = { path = "crates/physics" }
+# 2D/3D vector maths (f64 types like DVec2 for physics).
+glam = "0.34"
+# Window, input and simple drawing. Audio is disabled: not needed, and on
+# Linux it would require ALSA system libraries to build.
+macroquad = { version = "0.4", default-features = false }

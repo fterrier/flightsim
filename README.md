@@ -83,8 +83,13 @@ git checkout master       # back to the latest version
 
 ### Controls
 
-None yet (step 0 prints a message and exits). Each step that adds controls
-documents them here.
+| Key | Action |
+|---|---|
+| `Esc` | Quit |
+| `L` (hold) | Debug: slow frames (+50 ms each, ~15 FPS). The simulation keeps real-time pace. |
+| `K` (hold) | Debug: stalled frames (+400 ms each). Frame time is capped, so sim time falls behind real time. |
+
+Each step that adds controls updates this table.
 
 ## Develop
 
