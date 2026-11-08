@@ -1,19 +1,9 @@
-# CMake
-CMakeCache.txt
-CMakeFiles
-CMakeScripts
-Testing
-Makefile
-cmake_install.cmake
-install_manifest.txt
-compile_commands.json
-CTestTestfile.cmake
-build/
+# Rust build output
+/target
 
-# GGTAGS
-GPATH
-GRTAGS
-GTAGS
+# Leftover from the C++ version (see tag cpp-legacy)
+/build
 
-## random stuff
-**/*.osgt
+# OS / editor
+.DS_Store
+.vscode/

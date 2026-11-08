@@ -1,0 +1,24 @@
+# Runs on every push and pull request. Exactly the three commands you can run
+# locally (see README "Develop"), so a green local run means a green CI run.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      # Installs the toolchain pinned in rust-toolchain.toml.
+      - run: rustup toolchain install
+      # Caches compiled dependencies between runs.
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace

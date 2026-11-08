@@ -1,31 +1,73 @@
-[![Build Status](https://travis-ci.com/fterrier/flightsim.svg?branch=master)](https://travis-ci.com/fterrier/flightsim)
+[![CI](https://github.com/fterrier/flightsim/actions/workflows/ci.yml/badge.svg)](https://github.com/fterrier/flightsim/actions/workflows/ci.yml)
 
 # flightsim
-A flight simulator
 
-## Dependencies
+A flight simulator written from scratch in Rust, as a learning project.
 
-- Google Test: https://github.com/google/googletest
-- OpenSceneGraph 3.4: http://www.openscenegraph.org/
+## Goals
 
-## Howto
+1. **Learn how games and game engines work**: game loops, fixed timesteps,
+   memory layout and ownership, entity management, rendering pipelines.
+2. **High-fidelity flight physics**: a real 6-degrees-of-freedom rigid-body
+   model with aerodynamics, propulsion and ground contact, validated against
+   real aircraft data.
+3. **Generic aircraft**: aircraft are *data* (a definition file), not code.
+   We start with a Cessna 152 and add more later.
+4. **A world, not just a plane**: eventually multiple aircraft, buildings and
+   other objects sharing the same simulation.
+5. **Clean separation** between physics, collision, input, and rendering, so
+   each can be understood, tested and replaced on its own.
+6. **Iterate**: small runnable steps. Physics first with rudimentary
+   graphics, then accelerated 3D graphics.
 
-1. Init
+### Non-goals (for now)
+
+- Pretty graphics, sound, multiplayer, real-world scenery.
+- Using a full game engine (Bevy, Unity, Unreal...): they hide exactly the
+  parts this project is meant to teach.
+
+## Principles
+
+- **Simplicity first.** Plain structs and functions. No abstraction until a
+  second use case actually exists.
+- **Physics is pure.** The `physics` crate has no clock, no I/O and no
+  graphics: given the same state, inputs and `dt`, it always produces the
+  same result. That makes it testable and replayable.
+- **SI units everywhere** (metres, seconds, kilograms, radians), `f64` for
+  physics.
+- **Every step is runnable, tested and tagged** (`step-00`, `step-01`, ...),
+  so `git diff step-03 step-04` shows exactly what one step taught.
+
+The full plan, step by step, is in [ROADMAP.md](ROADMAP.md).
+
+## Layout
 
 ```
-mkdir build
-cd build/
-cmake ../
+crates/
+  physics/   library: simulation state + update functions (pure, no graphics)
+  app/       binary `flightsim`: window, input, game loop, drawing
 ```
 
-2. Build
+## Develop
 
-```
-make
+Prerequisite: [rustup](https://rustup.rs). The exact Rust version is pinned
+in `rust-toolchain.toml` and installed automatically on first build.
+
+```sh
+cargo run -p app                                     # run the simulator
+cargo test --workspace                               # run all tests
+cargo fmt --all                                      # format code
+cargo clippy --workspace --all-targets -- -D warnings  # lint
 ```
 
-3. Run tests
+CI (`.github/workflows/ci.yml`) runs `fmt --check`, `clippy` and `test` on
+Linux and macOS for every push.
 
-```
-make test
-```
+## History
+
+The first attempt was in C++ (CMake, OpenSceneGraph, then Magnum). It is
+preserved at the git tag `cpp-legacy` (branch `legacy`).
+
+## License
+
+[Eclipse Public License 2.0](LICENSE)

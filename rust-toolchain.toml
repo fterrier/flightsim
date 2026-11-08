@@ -1,0 +1,6 @@
+# Pins the exact compiler version. rustup reads this file and installs/uses
+# this toolchain automatically, so every machine (and CI) builds the same way.
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
