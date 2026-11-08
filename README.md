@@ -48,13 +48,47 @@ crates/
   app/       binary `flightsim`: window, input, game loop, drawing
 ```
 
-## Develop
+## Run
 
-Prerequisite: [rustup](https://rustup.rs). The exact Rust version is pinned
-in `rust-toolchain.toml` and installed automatically on first build.
+1. Install Rust via [rustup](https://rustup.rs) (once per machine):
+
+   ```sh
+   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+   ```
+
+   Open a new terminal afterwards so `cargo` is on your `PATH`. You don't
+   need to pick a Rust version: the one pinned in `rust-toolchain.toml` is
+   downloaded automatically the first time you build.
+
+2. Get the code and run the simulator:
+
+   ```sh
+   git clone git@github.com:fterrier/flightsim.git
+   cd flightsim
+   cargo run -p app
+   ```
+
+   The first build downloads and compiles dependencies, so it takes a bit
+   longer. For a faster simulation, build with optimisations:
+   `cargo run -p app --release`.
+
+What you see depends on how far the [ROADMAP](ROADMAP.md) has got. To run
+the program as it was after a given step:
 
 ```sh
-cargo run -p app                                       # run the simulator
+git checkout step-00      # any step tag: step-00, step-01, ...
+cargo run -p app
+git checkout master       # back to the latest version
+```
+
+### Controls
+
+None yet (step 0 prints a message and exits). Each step that adds controls
+documents them here.
+
+## Develop
+
+```sh
 cargo test --workspace                                 # run all tests
 cargo fmt --all                                        # format code
 cargo clippy --workspace --all-targets -- -D warnings  # lint
