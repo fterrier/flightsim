@@ -5,6 +5,7 @@
 //! display). Timing is in `timestep`, what-to-show-where in `view`, and the
 //! simulation itself in the `physics` crate.
 
+mod camera;
 mod timestep;
 mod view;
 
@@ -15,9 +16,10 @@ use std::time::{Duration, Instant};
 // Everything graphics-related comes from kiss3d, imported explicitly so you
 // can see which module each item lives in. `Vec2` is kiss3d's f32 vector
 // (glam, via kiss3d's `glamx` wrapper); physics uses its own f64 `DVec2`.
+use camera::FollowCamera;
 use kiss3d::camera::PanZoomCamera2d;
 use kiss3d::color::{Color, GRAY, WHITE};
-use kiss3d::event::{Action, Key};
+use kiss3d::event::{Action, Key, WindowEvent};
 use kiss3d::glamx::Vec2;
 use kiss3d::scene::SceneNode2d;
 use kiss3d::text::Font;
@@ -43,19 +45,17 @@ const STALLED_FRAME: Duration = Duration::from_millis(400);
 const BACKGROUND: Color = Color::new(0.006, 0.008, 0.015, 1.0);
 const BALL: Color = Color::new(1.0, 0.25, 0.0, 1.0);
 
-/// The scenario: a ball of this radius (metres)...
+/// The scenario: a ball of this radius (metres), resting on the ground...
 const BALL_RADIUS: f64 = 0.4;
-/// ...starting this high (metres)...
-const START_HEIGHT: f64 = 20.0;
-/// ...thrown sideways at this speed (m/s), so it flies a parabola.
-const THROW_SPEED: f64 = 5.0;
+/// ...thrown up and forward (m/s): it climbs ~20 m and lands ~33 m away.
+const THROW_VELOCITY: DVec2 = DVec2::new(8.0, 20.0);
 
 /// A fresh run: the ball at its starting point, and a new clock so that
 /// sim time and real time both restart from zero.
 fn new_run() -> (World, FixedTimestep) {
     let ball = Body {
-        position: DVec2::new(0.0, START_HEIGHT),
-        velocity: DVec2::new(THROW_SPEED, 0.0),
+        position: DVec2::new(0.0, BALL_RADIUS),
+        velocity: THROW_VELOCITY,
     };
     (
         World::new(ball, BALL_RADIUS),
@@ -77,14 +77,22 @@ async fn main() {
     let font = Font::default();
     let scale = window.scale_factor() as f32;
 
-    // The camera maps world space (metres, y up) to the screen. Its zoom is
-    // in physical pixels per metre; the mouse wheel changes it. Mouse-drag
-    // panning is turned off because the camera follows the ball.
-    // TODO(step-05): 3D chase and orbit cameras replace this 2D camera.
+    let (mut world, mut clock) = new_run();
+    // The state before the latest physics step, for interpolation.
+    let mut previous = world.clone();
+
+    // Two cameras with separate jobs:
+    // - `follow` (ours, tested) decides *where to look*: it glides after
+    //   the ball.
+    // - `camera` (kiss3d's) does the *projection* from world space (metres,
+    //   y up) to the screen. Its zoom is in physical pixels per metre; the
+    //   mouse wheel changes it. Mouse-drag panning is off: `follow` steers.
+    // TODO(step-05): 3D chase and orbit cameras replace these 2D ones.
     let mut camera = PanZoomCamera2d::new(Vec2::ZERO, view::initial_zoom(scale));
     camera.rebind_drag_button(None);
-
-    let (mut world, mut clock) = new_run();
+    let mut follow = FollowCamera::new(world.ball.position);
+    let half_height = view::visible_half_height(window.height() as f32, camera.zoom());
+    follow.snap_to(world.ball.position, half_height);
 
     // The *scene*: objects kiss3d keeps between frames (retained mode),
     // positioned in world space. The circle is a "render proxy": a visual
@@ -110,7 +118,18 @@ async fn main() {
         }
         if window.get_key(Key::R) == Action::Press {
             (world, clock) = new_run();
+            previous = world.clone();
         }
+        // Key *presses* (events), not "is the key down": holding C must
+        // switch once, not every frame.
+        for event in window.events().iter() {
+            if let WindowEvent::Key(Key::C, Action::Press, _) = event.value {
+                follow.toggle_mode();
+            }
+        }
+        // The mouse wheel zooms inside kiss3d's camera; we keep it in range.
+        let scale = window.scale_factor() as f32;
+        camera.set_zoom(view::clamp_zoom(camera.zoom(), scale));
         // TODO(step-06): read throttle and pitch keys into controls and pass
         // them to `world.step`.
         if window.get_key(Key::L) == Action::Press {
@@ -125,17 +144,33 @@ async fn main() {
         // sometimes 0 or 1.
         let steps = clock.advance(frame_time);
         for _ in 0..steps {
-            // TODO(step-03): keep a copy of the previous state here so the
-            // renderer can interpolate between the last two physics states.
+            previous = world.clone(); // keep the state before this step
             world.step(clock.dt());
         }
 
-        // 4. Physics -> scene (see `sync_scene` below).
-        sync_scene(&world, &mut ball, &mut camera);
+        // 4. What to draw: a blend of the last two physics states, `alpha`
+        // of the way between them. Smooth even when frames get 0, 1 or 2
+        // physics steps.
+        let drawn = view::interpolate(previous.ball.position, world.ball.position, clock.alpha());
 
-        // 5. Debug drawing and HUD (immediate mode: re-issued every frame).
+        // 5. The camera glides towards what's drawn (in real frame time).
+        let half_height = view::visible_half_height(window.height() as f32, camera.zoom());
+        follow.update(drawn, frame_time, half_height);
+
+        // 6. Physics -> scene (see `sync_scene` below).
+        sync_scene(drawn, &follow, &mut ball, &mut camera);
+
+        // 7. Debug drawing and HUD (immediate mode: re-issued every frame).
         draw_ruler(&mut window, &camera);
-        draw_hud(&mut window, &font, &world, &clock, steps, frame_time);
+        draw_hud(
+            &mut window,
+            &font,
+            &world,
+            &clock,
+            steps,
+            frame_time,
+            &follow,
+        );
     }
 }
 
@@ -143,12 +178,18 @@ async fn main() {
 //  PHYSICS -> SCENE
 //
 //  The only place where simulation state flows into graphics. Physics never
-//  knows the scene exists; once per frame we copy what it computed into the
-//  render proxies (and the camera). Everything after this only *reads*.
+//  knows the scene exists; once per frame we copy what it computed (here
+//  already interpolated: `drawn_ball`) into the render proxies, and where
+//  to look into kiss3d's camera. Everything after this only *reads*.
 //
 //  In 3D it stays the same: body position + orientation -> 3D scene node.
 // ═══════════════════════════════════════════════════════════════════════
-fn sync_scene(world: &World, ball: &mut SceneNode2d, camera: &mut PanZoomCamera2d) {
+fn sync_scene(
+    drawn_ball: DVec2,
+    follow: &FollowCamera,
+    ball: &mut SceneNode2d,
+    camera: &mut PanZoomCamera2d,
+) {
     // f64 (physics precision) -> f32 (what GPUs use).
     // TODO(later): f32 only has ~7 significant digits: at 100 km from the
     // origin, positions snap to ~1 cm steps and the picture jitters. The
@@ -156,11 +197,10 @@ fn sync_scene(world: &World, ball: &mut SceneNode2d, camera: &mut PanZoomCamera2
     // *before* converting, so the GPU only sees small numbers.
     // TODO(step-04): physics moves to 3D NED axes (z down); convert to
     // kiss3d's y-up axes here, and only here.
-    let position = world.ball.position;
-    ball.set_position(Vec2::new(position.x as f32, position.y as f32));
+    ball.set_position(Vec2::new(drawn_ball.x as f32, drawn_ball.y as f32));
 
-    let target = view::camera_target(position);
-    camera.set_at(Vec2::new(target.x as f32, target.y as f32));
+    let at = follow.position;
+    camera.set_at(Vec2::new(at.x as f32, at.y as f32));
 }
 
 /// Ground line and distance ruler, in world space (metres).
@@ -185,9 +225,10 @@ fn draw_hud(
     clock: &FixedTimestep,
     steps: u32,
     frame_time: f64,
+    follow: &FollowCamera,
 ) {
     let scale = window.scale_factor() as f32;
-    let lines = view::overlay_lines(world, clock, steps, frame_time);
+    let lines = view::overlay_lines(world, clock, steps, frame_time, follow.mode);
     for (i, line) in lines.iter().enumerate() {
         let (x, y) = view::hud_line_position(i, scale);
         window.draw_text(

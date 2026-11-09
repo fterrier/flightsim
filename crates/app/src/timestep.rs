@@ -53,9 +53,17 @@ impl FixedTimestep {
         steps
     }
 
-    // TODO(step-03): expose `alpha = accumulator / dt`, how far we are
-    // between the last physics step and the next one, so the renderer can
-    // interpolate between the previous and current state.
+    /// How far we are from the last physics step towards the next one, as a
+    /// fraction of a step: 0.0 = exactly at the latest state, 0.99 = almost
+    /// at the next one.
+    ///
+    /// The renderer uses it to draw *between* the previous and the current
+    /// physics state (interpolation). Without it, the drawn position only
+    /// changes when a step happens; when frames get 1, then 2, then 1 steps,
+    /// motion visibly stutters ("judder").
+    pub fn alpha(&self) -> f64 {
+        self.accumulator / self.dt
+    }
 
     pub fn dt(&self) -> f64 {
         self.dt
@@ -112,5 +120,15 @@ mod tests {
     #[test]
     fn exposes_its_timestep() {
         assert_eq!(FixedTimestep::new(DT).dt(), DT);
+    }
+
+    #[test]
+    fn alpha_is_how_far_we_are_towards_the_next_step() {
+        let mut clock = FixedTimestep::new(DT);
+        assert_eq!(clock.alpha(), 0.0);
+        clock.advance(2.25 * DT); // 2 steps run, a quarter step left over
+        assert_eq!(clock.alpha(), 0.25);
+        clock.advance(0.5 * DT); // no step: just further along
+        assert_eq!(clock.alpha(), 0.75);
     }
 }
