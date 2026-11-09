@@ -20,7 +20,7 @@ git checkout step-01            # the code as it was after step 1
 | ⬜ | **5. 3D: 6 degrees of freedom** | Box plane over a grid, chase camera | Body vs world frames, quaternions, inertia tensor |
 | ⬜ | **6. Data-driven Cessna 152** | Aircraft defined in `aircraft/c152.toml`; tests compare stall speed, cruise speed and climb rate to the POH | Aerodynamic coefficient build-up, model validation |
 | ⬜ | **7. Smooth rendering + replay** | Interpolated rendering; record a flight and replay it identically | State interpolation, determinism |
-| ⬜ | **8. Many entities (ECS)** | A second aircraft and some buildings in the world | Entity-Component-System, composition over inheritance (see decision below) |
+| ⬜ | **8. Many entities (ECS)** | A second aircraft and some buildings in the world; a benchmark of the physics → scene sync | Entity-Component-System, composition over inheritance (see decision below), data-oriented design: cache-friendly contiguous layout (SoA / archetypes), instanced rendering, benchmarking (`criterion`) |
 | ⬜ | **9. Ground and collisions** | Real takeoff roll and landing on gear; buildings are solid | Spring-damper contacts, friction, collision shapes |
 
 ### Later (unordered)
@@ -143,6 +143,31 @@ harder to read. So:
   (minimal library, we keep owning the loop), or `bevy_ecs` standalone
   (powerful, heavier).
 
+### Data layout: data-oriented design at step 8, measured
+
+Copies between systems (physics → scene → GPU, see Architecture rule 5)
+are normal in engines; what makes them cheap or expensive is **memory
+layout**, not byte count. The CPU loads memory in 64-byte cache lines; a
+cache miss to RAM costs ~100x an L1 hit. Copying 10,000 transforms is
+~30 µs from a contiguous array but ~1 ms if each lives in its own heap
+allocation.
+
+With one entity none of this is measurable, so steps 1-7 favour
+readability. At step 8, when entities multiply:
+
+- **Contiguous storage**: components in dense arrays (`Vec<T>`, not
+  `Vec<Box<T>>`). An archetype ECS gives this for free: each component
+  type is a column, so a system walks one array (Struct of Arrays).
+- **Indices, not pointers**: generational handles (index + version) to
+  refer to bodies and render instances.
+- **Instancing**: repeated objects (buildings) as one instance buffer, one
+  upload, one draw call, instead of one scene node each.
+- **Copy only what changed**: static objects are uploaded once; resting
+  bodies are skipped.
+- **No per-frame allocations** in hot paths: reuse buffers.
+- **Measure first**: a `criterion` benchmark of the sync, comparing
+  contiguous vs scattered layouts, before and after each optimisation.
+
 ## References
 
 - Beard & McLain, *Small Unmanned Aircraft: Theory and Practice*: most
@@ -153,6 +178,10 @@ harder to read. So:
   a real flight dynamics model to compare against
 - Glenn Fiedler, [Fix Your Timestep!](https://gafferongames.com/post/fix_your_timestep/)
 - Robert Nystrom, [Game Programming Patterns](https://gameprogrammingpatterns.com/)
-  (Game Loop, Component chapters)
+  (Game Loop, Component, Data Locality chapters)
+- Mike Acton, [Data-Oriented Design and C++](https://www.youtube.com/watch?v=rX0ItVEVjHc)
+  (CppCon 2014): the classic talk on designing around memory layout
+- Richard Fabian, [Data-Oriented Design](https://www.dataorienteddesign.com/dodbook/)
+  (book, free online)
 - [kiss3d examples](https://github.com/dimforge/kiss3d/tree/master/examples):
   one small file per feature (glTF, instancing, shadows, text, egui...)
