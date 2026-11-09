@@ -29,7 +29,8 @@ use timestep::FixedTimestep;
 const PHYSICS_HZ: f64 = 120.0;
 
 /// Hold L: every frame takes 50 ms longer, like a slow machine (~15 FPS).
-/// The dot keeps the same speed: that's the fixed timestep at work.
+/// The ball still lands at the same moment: that's the fixed timestep at
+/// work.
 const SLOW_FRAME: Duration = Duration::from_millis(50);
 
 /// Hold K: frames take longer than `timestep::MAX_FRAME_TIME`, so the
@@ -40,10 +41,27 @@ const STALLED_FRAME: Duration = Duration::from_millis(400);
 // expect) when drawing, which brightens dark values a lot. Linear 0.01 shows
 // as about 10% grey, not 1%. So dark colours need small numbers here.
 const BACKGROUND: Color = Color::new(0.006, 0.008, 0.015, 1.0);
-const DOT: Color = Color::new(1.0, 0.25, 0.0, 1.0);
+const BALL: Color = Color::new(1.0, 0.25, 0.0, 1.0);
 
-/// Radius of the dot, in metres (it's a world-space object).
-const DOT_RADIUS: f32 = 0.4;
+/// The scenario: a ball of this radius (metres)...
+const BALL_RADIUS: f64 = 0.4;
+/// ...starting this high (metres)...
+const START_HEIGHT: f64 = 20.0;
+/// ...thrown sideways at this speed (m/s), so it flies a parabola.
+const THROW_SPEED: f64 = 5.0;
+
+/// A fresh run: the ball at its starting point, and a new clock so that
+/// sim time and real time both restart from zero.
+fn new_run() -> (World, FixedTimestep) {
+    let ball = Body {
+        position: DVec2::new(0.0, START_HEIGHT),
+        velocity: DVec2::new(THROW_SPEED, 0.0),
+    };
+    (
+        World::new(ball, BALL_RADIUS),
+        FixedTimestep::new(1.0 / PHYSICS_HZ),
+    )
+}
 
 // `#[kiss3d::main]` generates the real `fn main()`. On desktop it simply
 // runs this async function to completion (`pollster::block_on`), and
@@ -61,21 +79,20 @@ async fn main() {
 
     // The camera maps world space (metres, y up) to the screen. Its zoom is
     // in physical pixels per metre; the mouse wheel changes it. Mouse-drag
-    // panning is turned off because the camera follows the dot.
+    // panning is turned off because the camera follows the ball.
     let mut camera = PanZoomCamera2d::new(Vec2::ZERO, view::initial_zoom(scale));
     camera.rebind_drag_button(None);
 
-    // The *scene*: objects kiss3d keeps between frames (retained mode),
-    // positioned in world space. The dot is a "render proxy": a visual
-    // stand-in for the physics body, kept in sync by `sync_scene`.
-    let mut scene = SceneNode2d::empty();
-    let mut dot = scene.add_circle(DOT_RADIUS).set_color(DOT);
+    let (mut world, mut clock) = new_run();
 
-    let mut world = World::new(Body {
-        position: DVec2::new(0.0, 2.0),
-        velocity: DVec2::new(10.0, 0.0),
-    });
-    let mut clock = FixedTimestep::new(1.0 / PHYSICS_HZ);
+    // The *scene*: objects kiss3d keeps between frames (retained mode),
+    // positioned in world space. The circle is a "render proxy": a visual
+    // stand-in for the physics ball, kept in sync by `sync_scene`. Its size
+    // comes from the physics collision radius, so what you see is what
+    // collides.
+    let mut scene = SceneNode2d::empty();
+    let mut ball = scene.add_circle(world.ball_radius as f32).set_color(BALL);
+
     let mut last_frame = Instant::now();
 
     // The game loop: one iteration per displayed frame. The body prepares
@@ -89,6 +106,9 @@ async fn main() {
         // 2. Input
         if window.get_key(Key::Escape) == Action::Press {
             break;
+        }
+        if window.get_key(Key::R) == Action::Press {
+            (world, clock) = new_run();
         }
         // TODO(step-03): read throttle and pitch keys into controls and pass
         // them to `world.step`.
@@ -110,7 +130,7 @@ async fn main() {
         }
 
         // 4. Physics -> scene (see `sync_scene` below).
-        sync_scene(&world, &mut dot, &mut camera);
+        sync_scene(&world, &mut ball, &mut camera);
 
         // 5. Debug drawing and HUD (immediate mode: re-issued every frame).
         draw_ruler(&mut window, &camera);
@@ -127,14 +147,14 @@ async fn main() {
 //
 //  In 3D it stays the same: body position + orientation -> 3D scene node.
 // ═══════════════════════════════════════════════════════════════════════
-fn sync_scene(world: &World, dot: &mut SceneNode2d, camera: &mut PanZoomCamera2d) {
+fn sync_scene(world: &World, ball: &mut SceneNode2d, camera: &mut PanZoomCamera2d) {
     // f64 (physics precision) -> f32 (what GPUs use).
     // TODO(later): f32 only has ~7 significant digits: at 100 km from the
     // origin, positions snap to ~1 cm steps and the picture jitters. The
     // usual fix is a "floating origin": subtract the camera position in f64
     // *before* converting, so the GPU only sees small numbers.
-    let position = world.dot.position;
-    dot.set_position(Vec2::new(position.x as f32, position.y as f32));
+    let position = world.ball.position;
+    ball.set_position(Vec2::new(position.x as f32, position.y as f32));
 
     let target = view::camera_target(position);
     camera.set_at(Vec2::new(target.x as f32, target.y as f32));

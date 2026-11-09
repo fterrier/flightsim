@@ -3,7 +3,7 @@
 //!
 //! Two coordinate spaces are in play, as in every game engine:
 //! - **World space**: metres, x right, y up, same as physics. The scene
-//!   (dot, ground, ruler) lives here, and the *camera* decides which part
+//!   (ball, ground, ruler) lives here, and the *camera* decides which part
 //!   of the world appears on screen, and how big.
 //! - **Screen space**: pixels, origin top-left, y down. Only the HUD (the
 //!   text overlay) lives here: it stays put whatever the camera does.
@@ -16,11 +16,11 @@ use crate::timestep::FixedTimestep;
 use physics::{DVec2, World};
 
 /// Starting zoom: logical pixels per metre. Scroll to zoom in/out.
-const PIXELS_PER_METRE: f32 = 20.0;
+const PIXELS_PER_METRE: f32 = 15.0;
 
-/// The camera looks at this height (metres), so the ground sits in the
-/// lower part of the screen.
-const CAMERA_HEIGHT: f64 = 8.0;
+/// The camera looks at this height (metres): the ground sits in the lower
+/// part of the screen, and a ball starting 20 m up stays below the HUD.
+const CAMERA_HEIGHT: f64 = 14.0;
 
 /// Ruler tick lengths, in metres (they're world-space objects).
 const MAJOR_TICK: f64 = 1.0;
@@ -97,13 +97,18 @@ pub fn overlay_lines(
     } else {
         "--".to_owned()
     };
+    let ball = &world.ball;
     vec![
         format!("{fps} FPS"),
         format!("{steps} physics steps this frame"),
         format!("sim time  {:5.2} s", world.time),
         format!("real time {:5.2} s", clock.real_time()),
-        format!("x = {:.1} m", world.dot.position.x),
-        "hold L: slow frames | hold K: stalled frames | scroll: zoom | Esc: quit".to_owned(),
+        format!("x = {:.1} m", ball.position.x),
+        // Height of the bottom of the ball, so it reads 0 when resting.
+        format!("height = {:.1} m", ball.position.y - world.ball_radius),
+        format!("vertical speed = {:.1} m/s", ball.velocity.y),
+        "R: throw again | hold L: slow frames | hold K: stalled frames | scroll: zoom | Esc: quit"
+            .to_owned(),
     ]
 }
 
@@ -159,11 +164,15 @@ mod tests {
     }
 
     #[test]
-    fn overlay_shows_timing_and_position() {
-        let mut world = World::new(Body {
-            position: DVec2::new(0.0, 2.0),
-            velocity: DVec2::new(10.0, 0.0),
-        });
+    fn overlay_shows_timing_position_and_speed() {
+        // A ball resting on the ground (radius 0.4 m), sliding at 10 m/s.
+        let mut world = World::new(
+            Body {
+                position: DVec2::new(0.0, 0.4),
+                velocity: DVec2::new(10.0, 0.0),
+            },
+            0.4,
+        );
         let mut clock = FixedTimestep::new(1.0 / 64.0);
         // A 0.25 s frame (the longest accepted without capping) = 16 steps.
         let steps = clock.advance(0.25);
@@ -177,14 +186,20 @@ mod tests {
         assert!(text.contains("sim time   0.25 s"), "{text}");
         assert!(text.contains("real time  0.25 s"), "{text}");
         assert!(text.contains("x = 2.5 m"), "{text}");
+        assert!(text.contains("height = 0.0 m"), "{text}"); // above ground
+        assert!(text.contains("vertical speed = 0.0 m/s"), "{text}");
+        assert!(text.contains("R: throw again"), "{text}");
     }
 
     #[test]
     fn overlay_has_no_fps_before_the_first_frame_is_timed() {
-        let world = World::new(Body {
-            position: DVec2::ZERO,
-            velocity: DVec2::ZERO,
-        });
+        let world = World::new(
+            Body {
+                position: DVec2::ZERO,
+                velocity: DVec2::ZERO,
+            },
+            0.4,
+        );
         let clock = FixedTimestep::new(1.0 / 64.0);
         // A zero frame time would mean "infinite FPS": show a placeholder.
         let text = overlay_lines(&world, &clock, 0, 0.0).join("\n");
