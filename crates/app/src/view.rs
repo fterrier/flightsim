@@ -33,7 +33,9 @@ pub fn initial_zoom(scale: f32) -> f32 {
 
 /// Where the camera looks: it follows the target horizontally, but stays
 /// at a fixed height so the ground remains in view.
-// TODO(step-03): once the plane climbs, follow it vertically too.
+// TODO(step-03): follow vertically too (with a dead zone), and glide
+// towards the target with frame-rate-independent smoothing instead of
+// snapping to it.
 pub fn camera_target(target: DVec2) -> DVec2 {
     DVec2::new(target.x, CAMERA_HEIGHT)
 }

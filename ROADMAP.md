@@ -15,13 +15,23 @@ git checkout step-01            # the code as it was after step 1
 | ✅ | **0. Harness** | `cargo test` green locally and in CI | Cargo workspace, pinned toolchain, CI (fmt, clippy, test, ≥ 95% coverage), TDD workflow (AGENTS.md) |
 | ✅ | **1. Window + game loop** | A dot moving at constant speed, followed by the camera; FPS and sim-time overlay; keys to simulate slow frames | Fixed-timestep accumulator, update vs render, spiral of death, world vs screen space, camera, retained scene + render proxies |
 | ✅ | **2. Falling ball** | A ball drops and stops on the ground | Numerical integration (semi-implicit Euler), testing against an analytic solution |
-| ⬜ | **3. 2D point-mass plane** (side view) | Throttle and pitch keys; the plane rolls, lifts off, climbs, stalls | Lift, drag, thrust, weight, air density, angle of attack |
-| ⬜ | **4. 2D plane that rotates** | Pitch is now a dynamic state driven by the elevator; the plane settles at its own trim attitude | Moments, moment of inertia, static stability (the tail), trim |
-| ⬜ | **5. 3D: 6 degrees of freedom** | Box plane over a grid, chase camera | Body vs world frames, quaternions, inertia tensor |
-| ⬜ | **6. Data-driven Cessna 152** | Aircraft defined in `aircraft/c152.toml`; tests compare stall speed, cruise speed and climb rate to the POH | Aerodynamic coefficient build-up, model validation |
-| ⬜ | **7. Smooth rendering + replay** | Interpolated rendering; record a flight and replay it identically | State interpolation, determinism |
-| ⬜ | **8. Many entities (ECS)** | A second aircraft and some buildings in the world; a benchmark of the physics → scene sync | Entity-Component-System, composition over inheritance (see decision below), data-oriented design: cache-friendly contiguous layout (SoA / archetypes), instanced rendering, benchmarking (`criterion`) |
-| ⬜ | **9. Ground and collisions** | Real takeoff roll and landing on gear; buildings are solid | Spring-damper contacts, friction, collision shapes |
+| ⬜ | **3. Smooth 2D camera** | Motion stays smooth at any display rate; the camera glides after the ball, follows it vertically, zoom is limited; a key switches follow / fixed camera | Interpolation between physics states, frame-rate-independent smoothing, dead zones, camera as a tested module |
+| ⬜ | **4. Ball in 3D** | A ball thrown in any direction over a ground grid, lit in 3D | `DVec3`, axis conventions: NED physics vs y-up graphics, converted in `sync_scene` (see decision below) |
+| ⬜ | **5. 3D cameras** | Chase camera (smoothed, behind the target) and orbit camera (mouse), switched with a key | 3D camera maths: look-at, spherical coordinates, smoothing in 3D |
+| ⬜ | **6. Point-mass plane** | Throttle and pitch keys; the plane rolls, lifts off, climbs, stalls (moving in the vertical plane) | Mass, lift, drag, thrust, weight, air density, angle of attack |
+| ⬜ | **7. Plane that pitches** | Pitch is now a dynamic state driven by the elevator; the plane settles at its own trim attitude | Moments, moment of inertia, static stability (the tail), trim |
+| ⬜ | **8. Full 6 degrees of freedom** | Roll and yaw: the plane banks and turns | Body vs world frames, quaternions, inertia tensor |
+| ⬜ | **9. Data-driven Cessna 152** | Aircraft defined in `aircraft/c152.toml`; tests compare stall speed, cruise speed and climb rate to the POH | Aerodynamic coefficient build-up, model validation |
+| ⬜ | **10. Replay** | Record a flight and replay it identically | Determinism, input recording |
+| ⬜ | **11. Many entities (ECS)** | A second aircraft and some buildings in the world; a benchmark of the physics → scene sync | Entity-Component-System, composition over inheritance (see decision below), data-oriented design: cache-friendly contiguous layout (SoA / archetypes), instanced rendering, benchmarking (`criterion`) |
+| ⬜ | **12. Ground and collisions** | Real takeoff roll and landing on gear; buildings are solid | Spring-damper contacts, friction, collision shapes |
+
+The order was revised after step 2: cameras and 3D come before the plane,
+so the plane is built directly in 3D (no throwaway 2D plane), kiss3d's 3D
+side is proven on a trivial object, and interpolation moved next to the
+camera work, where its absence would show as judder. The plane still
+starts with motion in the vertical plane only (steps 6-7), deferring
+rotation maths (quaternions) to step 8.
 
 ### Later (unordered)
 
@@ -64,8 +74,8 @@ Rules:
 Physics advances in fixed steps (e.g. 1/120 s) regardless of frame rate;
 rendering happens once per frame. Real frame time is accumulated and
 consumed in whole steps; frame time is capped so a stall (debugger, window
-drag) doesn't trigger an endless catch-up ("spiral of death"). Later
-(step 7) rendering interpolates between the last two physics states.
+drag) doesn't trigger an endless catch-up ("spiral of death"). From
+step 3, rendering interpolates between the last two physics states.
 This makes the simulation deterministic: same inputs, same flight.
 Reference: Glenn Fiedler, *Fix Your Timestep!*
 
@@ -93,6 +103,15 @@ Escape hatch if we ever need city-scale scenery: Bevy or Godot; the
 Risk: pre-1.0, breaking releases every few months. The version is pinned;
 upgrades are deliberate.
 
+### Axes: NED in physics, y-up in graphics (from step 4)
+
+Flight-dynamics literature (Stevens & Lewis, Beard & McLain) uses
+**NED**: x north, y east, z *down* (and body axes x forward, y right,
+z down). Graphics libraries, kiss3d included, use **y up**. Physics keeps
+NED so its equations match the books; the conversion happens in exactly
+one place, `sync_scene` (Architecture rule 5), as in real simulators.
+Until step 4 the 2D world uses x right, y up.
+
 ### Flight model: coefficient-based first
 
 Two families exist: *coefficient-based* (JSBSim, most research/training
@@ -109,7 +128,7 @@ is dominated by aerodynamic forces on one body with few contacts. The 6DOF
 equations are ~100 lines and the core thing to learn. A collision library
 (e.g. `parry`) may be used later for buildings.
 
-### Entities: ECS-shaped now, real ECS at step 8
+### Entities: ECS-shaped now, real ECS at step 11
 
 We want multiple aircraft, buildings, maybe ground vehicles. These share
 *some* aspects but not all:
@@ -130,20 +149,20 @@ with position + mesh").
 But with one entity, an ECS library is pure overhead and makes the code
 harder to read. So:
 
-- **Steps 1-7: ECS-shaped code without an ECS library.** State is split into
+- **Steps 1-10: ECS-shaped code without an ECS library.** State is split into
   small plain-data structs (future components: `Body`, `Aero`, ...) and
   behaviour lives in free functions taking only the components they need
   (future systems). A `World` struct holds everything.
 - **Physics stays ECS-agnostic forever.** Physics functions take components
   (`&mut Body`), never a `World` or an ECS query. Only the app/world layer
   knows how entities are stored. This keeps the choice reversible.
-- **Step 8: introduce a real ECS** when the second kind of entity arrives.
+- **Step 11: introduce a real ECS** when the second kind of entity arrives.
   Options to decide then: write a minimal one ourselves (~200 lines, great
   for learning how they work), [hecs](https://github.com/Ralith/hecs)
   (minimal library, we keep owning the loop), or `bevy_ecs` standalone
   (powerful, heavier).
 
-### Data layout: data-oriented design at step 8, measured
+### Data layout: data-oriented design at step 11, measured
 
 Copies between systems (physics → scene → GPU, see Architecture rule 5)
 are normal in engines; what makes them cheap or expensive is **memory
@@ -152,8 +171,8 @@ cache miss to RAM costs ~100x an L1 hit. Copying 10,000 transforms is
 ~30 µs from a contiguous array but ~1 ms if each lives in its own heap
 allocation.
 
-With one entity none of this is measurable, so steps 1-7 favour
-readability. At step 8, when entities multiply:
+With one entity none of this is measurable, so steps 1-10 favour
+readability. At step 11, when entities multiply:
 
 - **Contiguous storage**: components in dense arrays (`Vec<T>`, not
   `Vec<Box<T>>`). An archetype ECS gives this for free: each component

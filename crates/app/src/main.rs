@@ -80,6 +80,7 @@ async fn main() {
     // The camera maps world space (metres, y up) to the screen. Its zoom is
     // in physical pixels per metre; the mouse wheel changes it. Mouse-drag
     // panning is turned off because the camera follows the ball.
+    // TODO(step-05): 3D chase and orbit cameras replace this 2D camera.
     let mut camera = PanZoomCamera2d::new(Vec2::ZERO, view::initial_zoom(scale));
     camera.rebind_drag_button(None);
 
@@ -110,7 +111,7 @@ async fn main() {
         if window.get_key(Key::R) == Action::Press {
             (world, clock) = new_run();
         }
-        // TODO(step-03): read throttle and pitch keys into controls and pass
+        // TODO(step-06): read throttle and pitch keys into controls and pass
         // them to `world.step`.
         if window.get_key(Key::L) == Action::Press {
             thread::sleep(SLOW_FRAME);
@@ -124,7 +125,7 @@ async fn main() {
         // sometimes 0 or 1.
         let steps = clock.advance(frame_time);
         for _ in 0..steps {
-            // TODO(step-07): keep a copy of the previous state here so the
+            // TODO(step-03): keep a copy of the previous state here so the
             // renderer can interpolate between the last two physics states.
             world.step(clock.dt());
         }
@@ -153,6 +154,8 @@ fn sync_scene(world: &World, ball: &mut SceneNode2d, camera: &mut PanZoomCamera2
     // origin, positions snap to ~1 cm steps and the picture jitters. The
     // usual fix is a "floating origin": subtract the camera position in f64
     // *before* converting, so the GPU only sees small numbers.
+    // TODO(step-04): physics moves to 3D NED axes (z down); convert to
+    // kiss3d's y-up axes here, and only here.
     let position = world.ball.position;
     ball.set_position(Vec2::new(position.x as f32, position.y as f32));
 

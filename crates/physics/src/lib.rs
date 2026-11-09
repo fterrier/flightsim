@@ -21,6 +21,8 @@ pub const GRAVITY: DVec2 = DVec2::new(0.0, -9.80665);
 ///
 /// Plain data, no behaviour: in ECS terms this is a *component*.
 /// Behaviour lives in free functions such as [`integrate`] (a *system*).
+// TODO(step-04): DVec2 -> DVec3, in a NED frame (x north, y east, z down)
+// as in flight-dynamics textbooks; see ROADMAP "Axes".
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Body {
     /// Position, in metres.
@@ -30,7 +32,7 @@ pub struct Body {
 }
 
 /// Everything the simulation knows about.
-// TODO(step-08): this hand-written struct becomes an ECS world holding many
+// TODO(step-11): this hand-written struct becomes an ECS world holding many
 // entities (aircraft, buildings). Systems like `integrate` won't change:
 // they take components, not the world.
 #[derive(Clone, Debug, PartialEq)]
@@ -56,10 +58,10 @@ impl World {
     ///
     /// Callers must always pass the same `dt` (the fixed timestep), see
     /// `FixedTimestep` in the app.
-    // TODO(step-03): take the pilot's controls (throttle, pitch) as an
+    // TODO(step-06): take the pilot's controls (throttle, pitch) as an
     // argument here; physics reads them but never polls a keyboard.
     pub fn step(&mut self, dt: f64) {
-        // TODO(step-03): add aerodynamic forces (lift, drag) and thrust.
+        // TODO(step-06): add aerodynamic forces (lift, drag) and thrust.
         // With forces comes mass: acceleration = total force / mass.
         integrate(&mut self.ball, GRAVITY, dt);
         ground_contact(&mut self.ball, self.ball_radius);
@@ -78,7 +80,7 @@ impl World {
 /// Why this one? Explicit Euler (position from the *old* velocity) is
 /// equally simple but slowly *gains* energy: orbits spiral outwards and
 /// springs oscillate ever wider, which will matter for landing gear
-/// (springs) in step 9. Semi-implicit Euler keeps energy bounded, for the
+/// (springs) in step 12. Semi-implicit Euler keeps energy bounded, for the
 /// same cost. Its error is proportional to `dt` ("first-order"); that's
 /// what the tests check against the exact free-fall formula.
 pub fn integrate(body: &mut Body, acceleration: DVec2, dt: f64) {
@@ -92,7 +94,7 @@ pub fn integrate(body: &mut Body, acceleration: DVec2, dt: f64) {
 /// *inside* the ground on the step it lands. We push it back on top and
 /// cancel its downward speed: a perfectly inelastic impact, no bounce.
 /// Sideways motion is kept, as there's no friction yet.
-// TODO(step-09): replace with landing gear contacts: spring-damper forces
+// TODO(step-12): replace with landing gear contacts: spring-damper forces
 // at each wheel, plus rolling friction and brakes.
 pub fn ground_contact(body: &mut Body, radius: f64) {
     if body.position.y < radius {

@@ -25,14 +25,14 @@ the pieces will connect:
 
 ```rust
 for _ in 0..steps {
-    // TODO(step-07): keep a copy of the previous state here so the renderer
+    // TODO(step-03): keep a copy of the previous state here so the renderer
     // can interpolate between the last two physics states.
     world.step(clock.dt());
 }
 ```
 
 - Format: `// TODO(step-NN): <what plugs in here> [and why here]`. Always
-  name the step from ROADMAP.md, so `grep -rn "TODO(step-07)"` finds every
+  name the step from ROADMAP.md, so `grep -rn "TODO(step-03)"` finds every
   place a step touches.
 - Use `TODO(later)` for items in the ROADMAP "Later" list.
 - Comment only, no placeholder code: no empty functions, stub structs or

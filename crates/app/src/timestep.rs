@@ -53,7 +53,7 @@ impl FixedTimestep {
         steps
     }
 
-    // TODO(step-07): expose `alpha = accumulator / dt`, how far we are
+    // TODO(step-03): expose `alpha = accumulator / dt`, how far we are
     // between the last physics step and the next one, so the renderer can
     // interpolate between the previous and current state.
 
