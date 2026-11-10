@@ -60,7 +60,9 @@ Rules:
    It exposes plain data and functions like `step(&mut state, &controls, dt)`.
 2. **The app owns the loop.** It reads the clock, polls input, calls physics
    a whole number of fixed steps, then draws.
-3. **Rendering only reads** simulation state, never writes it.
+3. **Rendering only reads** simulation state, never writes it. The
+   game loop's logic (fixed steps, interpolation, camera, HUD) lives in
+   tested modules; `main.rs` is a thin shell around them.
 4. **New crates only when a boundary hurts.** Likely future splits:
    `aircraft` (data loading), `collision`.
 5. **Physics → scene in one place.** Graphics keep *render proxies*
@@ -177,7 +179,12 @@ cache miss to RAM costs ~100x an L1 hit. Copying 10,000 transforms is
 ~30 µs from a contiguous array but ~1 ms if each lives in its own heap
 allocation.
 
-With one entity none of this is measurable, so steps 1-10 favour
+One rule applies from the start, because it costs nothing in
+readability: **a steady-state frame allocates no heap memory** (iterators
+instead of temporary `Vec`s, text buffers reused). A test enforces it with
+a counting allocator (`crates/app/src/alloc_count.rs`).
+
+The rest isn't measurable with one entity, so steps 1-10 favour
 readability. At step 11, when entities multiply:
 
 - **Contiguous storage**: components in dense arrays (`Vec<T>`, not

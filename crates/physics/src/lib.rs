@@ -31,6 +31,20 @@ pub struct Body {
     pub velocity: DVec2,
 }
 
+/// A collision shape: a circle of `radius` metres, centred on its body's
+/// position.
+///
+/// Kept separate from [`Body`] as in every physics engine (Rapier and
+/// Avian colliders, Unity and Box2D shapes): the body is *how it moves*,
+/// the collider is *what it bumps into*. One body may later carry several
+/// shapes (an aircraft: fuselage, wings, wheels).
+// TODO(step-04): becomes a sphere.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Circle {
+    /// In metres.
+    pub radius: f64,
+}
+
 /// Everything the simulation knows about.
 // TODO(step-11): this hand-written struct becomes an ECS world holding many
 // entities (aircraft, buildings). Systems like `integrate` won't change:
@@ -38,19 +52,22 @@ pub struct Body {
 #[derive(Clone, Debug, PartialEq)]
 pub struct World {
     /// Simulated time since the start, in seconds. Only `step` advances it.
+    // TODO(step-10): replays identify moments by step number; count steps
+    // in a `u64` (exact) and derive time as steps × dt, instead of summing
+    // a float that slowly accumulates rounding error.
     pub time: f64,
     /// The ball's motion. `position` is the centre of the ball.
     pub ball: Body,
-    /// The ball's collision shape: a circle of this radius, in metres.
-    pub ball_radius: f64,
+    /// The ball's collision shape.
+    pub ball_shape: Circle,
 }
 
 impl World {
-    pub fn new(ball: Body, ball_radius: f64) -> Self {
+    pub fn new(ball: Body, ball_shape: Circle) -> Self {
         Self {
             time: 0.0,
             ball,
-            ball_radius,
+            ball_shape,
         }
     }
 
@@ -64,7 +81,7 @@ impl World {
         // TODO(step-06): add aerodynamic forces (lift, drag) and thrust.
         // With forces comes mass: acceleration = total force / mass.
         integrate(&mut self.ball, GRAVITY, dt);
-        ground_contact(&mut self.ball, self.ball_radius);
+        ground_contact(&mut self.ball, &self.ball_shape);
         self.time += dt;
     }
 }
@@ -88,7 +105,8 @@ pub fn integrate(body: &mut Body, acceleration: DVec2, dt: f64) {
     body.position += body.velocity * dt;
 }
 
-/// Keeps a ball of `radius` (metres) from going through the ground (y = 0).
+/// Keeps a body with a circular collider `shape` from going through the
+/// ground (y = 0).
 ///
 /// Integration moves in discrete jumps, so a falling ball ends up slightly
 /// *inside* the ground on the step it lands. We push it back on top and
@@ -96,9 +114,9 @@ pub fn integrate(body: &mut Body, acceleration: DVec2, dt: f64) {
 /// Sideways motion is kept, as there's no friction yet.
 // TODO(step-12): replace with landing gear contacts: spring-damper forces
 // at each wheel, plus rolling friction and brakes.
-pub fn ground_contact(body: &mut Body, radius: f64) {
-    if body.position.y < radius {
-        body.position.y = radius;
+pub fn ground_contact(body: &mut Body, shape: &Circle) {
+    if body.position.y < shape.radius {
+        body.position.y = shape.radius;
         body.velocity.y = body.velocity.y.max(0.0);
     }
 }
@@ -109,6 +127,7 @@ mod tests {
 
     const DT: f64 = 1.0 / 120.0;
     const RADIUS: f64 = 0.4;
+    const BALL: Circle = Circle { radius: RADIUS };
     /// g, as a positive number, in m/s².
     const G: f64 = -GRAVITY.y;
 
@@ -193,7 +212,7 @@ mod tests {
             position: DVec2::new(3.0, -0.1),
             velocity: DVec2::new(5.0, -2.0),
         };
-        ground_contact(&mut body, RADIUS);
+        ground_contact(&mut body, &BALL);
         assert_eq!(body.position, DVec2::new(3.0, RADIUS));
         // Falling stops; no friction yet, so it keeps sliding sideways.
         assert_eq!(body.velocity, DVec2::new(5.0, 0.0));
@@ -202,23 +221,23 @@ mod tests {
     #[test]
     fn ground_contact_ignores_a_ball_in_the_air() {
         let mut body = thrown_ball();
-        ground_contact(&mut body, RADIUS);
+        ground_contact(&mut body, &BALL);
         assert_eq!(body, thrown_ball());
     }
 
     #[test]
     fn world_starts_at_time_zero() {
-        let world = World::new(thrown_ball(), RADIUS);
+        let world = World::new(thrown_ball(), BALL);
         assert_eq!(world.time, 0.0);
         assert_eq!(world.ball, thrown_ball());
-        assert_eq!(world.ball_radius, RADIUS);
+        assert_eq!(world.ball_shape, BALL);
     }
 
     #[test]
     fn ball_lands_at_the_free_fall_time_and_stays_on_the_ground() {
         // Its centre falls h = 20 m - radius, which takes t = sqrt(2h/g).
         let impact = (2.0 * (20.0 - RADIUS) / G).sqrt();
-        let mut world = World::new(thrown_ball(), RADIUS);
+        let mut world = World::new(thrown_ball(), BALL);
 
         while world.time < impact - 2.0 * DT {
             world.step(DT);
@@ -241,8 +260,8 @@ mod tests {
     fn simulation_is_deterministic() {
         // Two worlds fed the same steps must be bit-identical (assert_eq!,
         // not a tolerance). Replays in step 7 rely on this.
-        let mut a = World::new(thrown_ball(), RADIUS);
-        let mut b = World::new(thrown_ball(), RADIUS);
+        let mut a = World::new(thrown_ball(), BALL);
+        let mut b = World::new(thrown_ball(), BALL);
         for _ in 0..1000 {
             a.step(DT);
             b.step(DT);

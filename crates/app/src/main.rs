@@ -2,10 +2,15 @@
 //! runs the game loop and draws.
 //!
 //! No logic lives here, because this file can't be tested in CI (no
-//! display). Timing is in `timestep`, what-to-show-where in `view`, and the
-//! simulation itself in the `physics` crate.
+//! display). The loop's logic is in tested modules: `simulation` (fixed
+//! steps and interpolation), `camera` (where to look), `view` (world-space
+//! framing), `hud` (screen-space text), and the `physics` crate itself.
 
+#[cfg(test)]
+mod alloc_count;
 mod camera;
+mod hud;
+mod simulation;
 mod timestep;
 mod view;
 
@@ -17,6 +22,7 @@ use std::time::{Duration, Instant};
 // can see which module each item lives in. `Vec2` is kiss3d's f32 vector
 // (glam, via kiss3d's `glamx` wrapper); physics uses its own f64 `DVec2`.
 use camera::FollowCamera;
+use hud::{FrameStats, Hud};
 use kiss3d::camera::PanZoomCamera2d;
 use kiss3d::color::{Color, GRAY, WHITE};
 use kiss3d::event::{Action, Key, WindowEvent};
@@ -24,9 +30,8 @@ use kiss3d::glamx::Vec2;
 use kiss3d::scene::SceneNode2d;
 use kiss3d::text::Font;
 use kiss3d::window::Window;
-use physics::{Body, DVec2, World};
-use timestep::FixedTimestep;
-use view::RenderState;
+use physics::{Body, Circle, DVec2, World};
+use simulation::{RenderState, Simulation};
 
 /// Physics runs at this fixed rate, whatever the display's frame rate.
 const PHYSICS_HZ: f64 = 120.0;
@@ -51,17 +56,17 @@ const BALL_RADIUS: f64 = 0.4;
 /// ...thrown up and forward (m/s): it climbs ~20 m and lands ~33 m away.
 const THROW_VELOCITY: DVec2 = DVec2::new(8.0, 20.0);
 
-/// A fresh run: the ball at its starting point, and a new clock so that
-/// sim time and real time both restart from zero.
-fn new_run() -> (World, FixedTimestep) {
+/// A fresh run of the scenario. Restarting = replacing the `Simulation`,
+/// so its clock and interpolation state restart too.
+fn new_simulation() -> Simulation {
     let ball = Body {
         position: DVec2::new(0.0, BALL_RADIUS),
         velocity: THROW_VELOCITY,
     };
-    (
-        World::new(ball, BALL_RADIUS),
-        FixedTimestep::new(1.0 / PHYSICS_HZ),
-    )
+    let shape = Circle {
+        radius: BALL_RADIUS,
+    };
+    Simulation::new(World::new(ball, shape), 1.0 / PHYSICS_HZ)
 }
 
 // `#[kiss3d::main]` generates the real `fn main()`. On desktop it simply
@@ -78,10 +83,7 @@ async fn main() {
     let font = Font::default();
     let scale = window.scale_factor() as f32;
 
-    let (mut world, mut clock) = new_run();
-    // What was drawn-relevant before the latest physics step, for
-    // interpolation (positions only, not a copy of the world).
-    let mut previous = RenderState::capture(&world);
+    let mut sim = new_simulation();
 
     // Two cameras with separate jobs:
     // - `follow` (ours, tested) decides *where to look*: it glides after
@@ -92,49 +94,50 @@ async fn main() {
     // TODO(step-05): 3D chase and orbit cameras replace these 2D ones.
     let mut camera = PanZoomCamera2d::new(Vec2::ZERO, view::initial_zoom(scale));
     camera.rebind_drag_button(None);
-    let mut follow = FollowCamera::new(world.ball.position);
+    let mut follow = FollowCamera::new(sim.world().ball.position);
     let half_height = view::visible_half_height(window.height() as f32, camera.zoom());
-    follow.snap_to(world.ball.position, half_height);
+    follow.snap_to(sim.world().ball.position, half_height);
 
     // The *scene*: objects kiss3d keeps between frames (retained mode),
     // positioned in world space. The circle is a "render proxy": a visual
     // stand-in for the physics ball, kept in sync by `sync_scene`. Its size
-    // comes from the physics collision radius, so what you see is what
-    // collides.
+    // comes from the physics collider, so what you see is what collides.
     let mut scene = SceneNode2d::empty();
-    let mut ball = scene.add_circle(world.ball_radius as f32).set_color(BALL);
+    let radius = sim.world().ball_shape.radius as f32;
+    let mut ball = scene.add_circle(radius).set_color(BALL);
 
-    let mut last_frame = Instant::now();
+    let mut stats = FrameStats::default();
+    let mut hud = Hud::default();
+    let mut last_frame: Option<Instant> = None;
 
     // The game loop: one iteration per displayed frame. The body prepares
     // a frame; the `while` condition then draws it on screen.
     while window.render_2d(&mut scene, &mut camera).await {
-        // 1. Clock: how much real time did the last frame take?
+        // 1. Clock: how much real time did the last frame take? The first
+        // frame also contains window and GPU setup (~150 ms measured),
+        // which must not be simulated, so the clock starts at 0 once the
+        // first frame is on screen.
         let now = Instant::now();
-        let frame_time = (now - last_frame).as_secs_f64();
-        last_frame = now;
+        let frame_time = last_frame.map_or(0.0, |last| (now - last).as_secs_f64());
+        last_frame = Some(now);
+        stats.record(frame_time);
 
-        // 2. Input
-        if window.get_key(Key::Escape) == Action::Press {
-            break;
-        }
-        if window.get_key(Key::R) == Action::Press {
-            (world, clock) = new_run();
-            // A teleport: don't blend from where the ball was before.
-            previous = RenderState::capture(&world);
-        }
-        // Key *presses* (events), not "is the key down": holding C must
-        // switch once, not every frame.
+        // 2. Input. Key *presses* come as events, so holding a key acts
+        // once, not every frame.
         for event in window.events().iter() {
-            if let WindowEvent::Key(Key::C, Action::Press, _) = event.value {
-                follow.toggle_mode();
+            match event.value {
+                WindowEvent::Key(Key::Escape, Action::Press, _) => return,
+                WindowEvent::Key(Key::R, Action::Press, _) => sim = new_simulation(),
+                WindowEvent::Key(Key::C, Action::Press, _) => follow.toggle_mode(),
+                _ => {}
             }
         }
         // The mouse wheel zooms inside kiss3d's camera; we keep it in range.
         let scale = window.scale_factor() as f32;
         camera.set_zoom(view::clamp_zoom(camera.zoom(), scale));
         // TODO(step-06): read throttle and pitch keys into controls and pass
-        // them to `world.step`.
+        // them to `sim.advance`.
+        // Debug keys act while *held*, so they read the key state instead.
         if window.get_key(Key::L) == Action::Press {
             thread::sleep(SLOW_FRAME);
         }
@@ -142,19 +145,12 @@ async fn main() {
             thread::sleep(STALLED_FRAME);
         }
 
-        // 3. Update physics: as many fixed steps as the elapsed real time
-        // calls for. At 60 FPS that's 2 steps per frame; at 144 FPS
-        // sometimes 0 or 1.
-        let steps = clock.advance(frame_time);
-        for _ in 0..steps {
-            previous = RenderState::capture(&world); // before this step
-            world.step(clock.dt());
-        }
+        // 3. Physics: as many fixed steps as the elapsed real time calls
+        // for. At 60 FPS that's 2 steps per frame; at 144 FPS 0 or 1.
+        let steps = sim.advance(frame_time);
 
-        // 4. What to draw: a blend of the last two physics states, `alpha`
-        // of the way between them. Smooth even when frames get 0, 1 or 2
-        // physics steps.
-        let drawn = previous.interpolate(&RenderState::capture(&world), clock.alpha());
+        // 4. What to draw: between the last two physics states.
+        let drawn = sim.drawn();
 
         // 5. The camera glides towards what's drawn (in real frame time).
         let half_height = view::visible_half_height(window.height() as f32, camera.zoom());
@@ -164,16 +160,9 @@ async fn main() {
         sync_scene(&drawn, &follow, &mut ball, &mut camera);
 
         // 7. Debug drawing and HUD (immediate mode: re-issued every frame).
+        hud.update(&sim, steps, &stats, follow.mode);
         draw_ruler(&mut window, &camera);
-        draw_hud(
-            &mut window,
-            &font,
-            &world,
-            &clock,
-            steps,
-            frame_time,
-            &follow,
-        );
+        draw_hud(&mut window, &font, &hud);
     }
 }
 
@@ -220,26 +209,11 @@ fn draw_ruler(window: &mut Window, camera: &PanZoomCamera2d) {
     }
 }
 
-/// Text overlay, in screen space (physical pixels, top-left origin).
-fn draw_hud(
-    window: &mut Window,
-    font: &Arc<Font>,
-    world: &World,
-    clock: &FixedTimestep,
-    steps: u32,
-    frame_time: f64,
-    follow: &FollowCamera,
-) {
+/// HUD text, in screen space (physical pixels, top-left origin).
+fn draw_hud(window: &mut Window, font: &Arc<Font>, hud: &Hud) {
     let scale = window.scale_factor() as f32;
-    let lines = view::overlay_lines(world, clock, steps, frame_time, follow.mode);
-    for (i, line) in lines.iter().enumerate() {
-        let (x, y) = view::hud_line_position(i, scale);
-        window.draw_text(
-            line,
-            Vec2::new(x, y),
-            view::hud_font_size(scale),
-            font,
-            WHITE,
-        );
+    for (i, line) in hud.lines().enumerate() {
+        let (x, y) = hud::line_position(i, scale);
+        window.draw_text(line, Vec2::new(x, y), hud::font_size(scale), font, WHITE);
     }
 }

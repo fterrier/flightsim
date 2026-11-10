@@ -102,6 +102,12 @@ screen.
   comments. Convert to pixels / `f32` only at the drawing boundary.
 - No `unwrap()`/`expect()` in library code paths that can fail at runtime;
   fine in tests.
+- **No heap allocation per frame** in the game loop: iterate instead of
+  collecting into temporary `Vec`s, reuse buffers (`String::clear` keeps
+  capacity). Anything new in the loop goes into the
+  `a_steady_state_frame_allocates_nothing` test (`alloc_count.rs`).
+- Separate data by concept, as engines do: a body (motion) is not its
+  collider (shape); simulation state is not render state.
 
 ## Git
 
