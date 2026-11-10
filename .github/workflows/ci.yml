@@ -22,6 +22,10 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      # Games use the engine's game API only, never its platform API
+      # (see AGENTS.md "Engine vs game").
+      - name: game does not use engine::platform
+        run: "! grep -rn 'engine::platform' crates/flightsim"
 
   # Line coverage must stay >= 95% (see AGENTS.md). The engine_kiss3d crate
   # and flightsim's main.rs need a window and GPU; they must contain no

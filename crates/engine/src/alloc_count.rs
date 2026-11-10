@@ -50,7 +50,7 @@ fn allocations_in(f: impl FnOnce()) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Engine;
+    use crate::engine::Engine;
     use crate::engine::testing::TestGame;
     use crate::render::Screen;
     use crate::render::fakes::NullBackend;

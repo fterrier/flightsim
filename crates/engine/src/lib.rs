@@ -13,8 +13,9 @@
 //! the engine never knows which game it runs.
 //!
 //! The public API is deliberately small, like Bevy's `prelude` or Unity's
-//! scripting API: the modules are private, and only what games and
-//! platforms need is re-exported below. A game can't build its own
+//! scripting API: the modules are private, and only what games need is
+//! re-exported below; what platform crates need lives apart, in
+//! [`platform`]. A game can't build its own
 //! renderer or step the simulation behind the engine's back. Within the
 //! crate, items shared between modules are `pub(crate)`: every `pub` is
 //! real public API (enforced by the `unreachable_pub` lint).
@@ -44,7 +45,15 @@ pub use simulation::WorldView;
 // it through `WorldView`, without the machinery (`World::step`).
 pub use physics::{Body, Circle, DVec2, Motion, STANDARD_GRAVITY};
 
-// For platforms: the engine they run, and the interface they implement to
-// draw with a graphics library.
-pub use engine::{Engine, Flow};
-pub use render::{ProxyId, RenderBackend, Screen};
+/// For platform crates only (window, game loop, graphics backend, like
+/// `engine_kiss3d`): the engine they run, and the interface they implement
+/// to draw with a graphics library. Games never need this: they implement
+/// `Game` and call their platform's `run`.
+///
+/// Rust has no "friend" visibility between crates, so these items must be
+/// `pub` for the platform crate to use them; a separate namespace keeps
+/// them out of the games' API (CI checks the game never imports it).
+pub mod platform {
+    pub use crate::engine::{Engine, Flow};
+    pub use crate::render::{ProxyId, RenderBackend, Screen};
+}

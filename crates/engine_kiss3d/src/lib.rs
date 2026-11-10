@@ -12,9 +12,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 
-use engine::{
-    Color, Engine, Flow, Game, InputEvent, Key, ProxyId, RenderBackend, Screen, Shape, Visual,
-};
+use engine::platform::{Engine, Flow, ProxyId, RenderBackend, Screen};
+use engine::{Color, Game, InputEvent, Key, Shape, Visual};
 use glam::Vec2;
 use kiss3d::camera::PanZoomCamera2d;
 use kiss3d::color::Color as Kiss3dColor;

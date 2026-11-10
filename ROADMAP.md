@@ -81,7 +81,10 @@ public in the `physics` library (as `b2World_Step` in Box2D or
 part of the game-facing API. Everything else is the engine's. Games
 depend on `engine` alone, a facade like the `bevy` crate: it re-exports
 the physics content types, and its public API is a short, curated list
-in `engine/src/lib.rs`.
+in `engine/src/lib.rs`. What only platform crates need (`Engine`,
+`RenderBackend`...) lives apart in `engine::platform`: Rust has no
+"friend" visibility between crates, so it must be `pub`, but games never
+import it (checked in CI).
 
 Rules:
 
