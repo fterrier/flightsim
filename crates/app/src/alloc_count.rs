@@ -50,12 +50,10 @@ pub fn allocations_in(f: impl FnOnce()) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::camera::{CameraMode, FollowCamera};
-    use crate::hud::{FrameStats, Hud};
     use crate::render::fakes::NullBackend;
-    use crate::render::{Renderer, Screen, Shape, Visual, WHITE};
+    use crate::render::{Renderer, Screen};
+    use crate::scenario;
     use crate::simulation::Simulation;
-    use physics::{Body, Circle, DVec2, World};
 
     #[test]
     fn the_counter_sees_allocations() {
@@ -68,37 +66,22 @@ mod tests {
 
     #[test]
     fn a_steady_state_frame_allocates_nothing() {
-        let ball = Body {
-            position: DVec2::new(0.0, 0.4),
-            velocity: DVec2::new(8.0, 20.0),
-        };
-        let mut sim = Simulation::new(World::new(ball, Circle { radius: 0.4 }), 1.0 / 120.0);
-        let mut camera = FollowCamera::new(DVec2::ZERO);
-        let mut stats = FrameStats::default();
-        let mut hud = Hud::default();
+        let scenario = scenario::ball_throw();
+        let mut sim = Simulation::new(scenario.world.clone(), 1.0 / 120.0);
         // The renderer runs for real, against a backend that draws nothing.
         let mut backend = NullBackend(Screen {
             width: 2560.0,
             height: 1440.0,
             scale: 2.0,
         });
-        let visual = Visual {
-            shape: Shape::Circle { radius: 0.4 },
-            color: WHITE,
-        };
-        let renderer = Renderer::new(&mut backend, &visual);
+        let mut renderer = Renderer::new(&mut backend, &scenario);
 
         // Everything the game loop does per frame; only kiss3d itself is
         // replaced (by `NullBackend`).
         let mut frame = || {
             let frame_time = 1.0 / 60.0;
-            stats.record(frame_time);
             let steps = sim.advance(frame_time);
-            let drawn = sim.drawn();
-            let half_height = renderer.visible_half_height(&backend);
-            camera.update(drawn.ball, frame_time, half_height);
-            hud.update(&sim, steps, &stats, CameraMode::Follow);
-            renderer.draw_frame(&mut backend, &drawn, camera.position, &hud);
+            renderer.draw_frame(&mut backend, &sim, steps, frame_time);
         };
 
         // 10 simulated minutes of frames: numbers on the HUD grow longer,

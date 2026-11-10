@@ -53,11 +53,14 @@ crates/
   physics/   pure simulation: state structs + functions that update them
   app/       everything else, in layers:
 
-  platform     main.rs            window, keyboard, clock, the game loop   (humble)
+  platform     main.rs            loads the scenario; window, keyboard,
+                                  clock, the game loop                     (humble)
+  content      scenario.rs        what exists and what it looks like (a "level")
   simulation   simulation.rs      physics world + fixed steps + interpolation
                timestep.rs        the fixed-timestep clock
-  presentation camera.rs          where to look (smooth follow)
-               render.rs          how to draw: Renderer, against RenderBackend
+  presentation render.rs          Renderer: proxies, camera, HUD, against
+                                  the RenderBackend interface
+               camera.rs          where to look (smooth follow)
                view.rs, hud.rs    world-space framing, screen-space text
   backend      kiss3d_backend.rs  RenderBackend with kiss3d, 1 call/method (humble)
 ```
@@ -77,9 +80,11 @@ Rules:
    (scene nodes) for simulated objects; once per frame, one place copies
    the (interpolated) physics state into them: `Renderer::draw_frame`, in
    `render.rs`.
-6. **Content is data.** What an object looks like is a `Visual` (shape +
-   colour, later a glTF mesh + material). The render interface has a few
-   generic operations and never grows with content: no `draw_plane`.
+6. **Content is data.** A scenario (a "level") defines what exists: each
+   object's body and collider for the simulation, and its `Visual` (shape
+   + colour, later a glTF mesh + material) for the renderer. The game loop
+   never knows what's inside, and the render interface has a few generic
+   operations that never grow with content: no `draw_plane`.
 
 ## Decisions
 

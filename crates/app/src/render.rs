@@ -19,8 +19,10 @@
 use glam::Vec2;
 use physics::DVec2;
 
-use crate::hud::{self, Hud};
-use crate::simulation::RenderState;
+use crate::camera::FollowCamera;
+use crate::hud::{self, FrameStats, Hud};
+use crate::scenario::Scenario;
+use crate::simulation::Simulation;
 use crate::view;
 
 /// A colour, in *linear* light (how much light, not how bright it looks).
@@ -97,43 +99,65 @@ pub trait RenderBackend {
 /// Width of the ground and ruler lines, in physical pixels.
 const LINE_WIDTH: f32 = 2.0;
 
+/// Everything about presenting the simulation: render proxies, where the
+/// camera looks, and the debug HUD. The game loop only hands it the
+/// simulation once per frame.
 pub struct Renderer {
     /// The ball's render proxy.
     // TODO(step-11): one proxy per entity that has a `Visual`: created
     // when the entity spawns, freed when it despawns (like Godot's
     // `free_rid`), all updated in a single loop in `draw_frame`.
     ball: ProxyId,
+    /// Where to look: glides after the ball.
+    // TODO(step-05): 3D chase and orbit cameras.
+    camera: FollowCamera,
+    hud: Hud,
+    stats: FrameStats,
 }
 
 impl Renderer {
-    /// Creates the render proxies and the starting camera.
-    pub fn new(backend: &mut impl RenderBackend, ball: &Visual) -> Self {
+    /// Creates the scenario's render proxies and frames the starting view.
+    pub fn new(backend: &mut impl RenderBackend, scenario: &Scenario) -> Self {
         let scale = backend.screen().scale;
         backend.set_camera(Vec2::ZERO, view::initial_zoom(scale));
+        let start = scenario.world.ball.position;
+        let mut camera = FollowCamera::new(start);
+        camera.snap_to(start, visible_half_height(backend));
         Self {
-            ball: backend.create_proxy(ball),
+            ball: backend.create_proxy(&scenario.ball_visual),
+            camera,
+            hud: Hud::default(),
+            stats: FrameStats::default(),
         }
     }
 
-    /// Metres visible above and below the camera centre, for framing.
-    pub fn visible_half_height(&self, backend: &impl RenderBackend) -> f64 {
-        let screen = backend.screen();
-        let zoom = view::clamp_zoom(backend.zoom(), screen.scale);
-        view::visible_half_height(screen.height, zoom)
+    /// Switches the camera between following the ball and staying fixed.
+    pub fn toggle_camera(&mut self) {
+        self.camera.toggle_mode();
     }
 
-    /// Prepares one frame: camera, proxies, ruler, HUD. `drawn` is the
-    /// (interpolated) state to show, `look_at` where the camera points.
+    /// Prepares one frame showing `sim`: camera, proxies, ruler, HUD.
+    /// `steps` is how many physics steps ran this frame, `frame_time` how
+    /// long the last frame took (real seconds).
     pub fn draw_frame(
-        &self,
+        &mut self,
         backend: &mut impl RenderBackend,
-        drawn: &RenderState,
-        look_at: DVec2,
-        hud: &Hud,
+        sim: &Simulation,
+        steps: u32,
+        frame_time: f64,
     ) {
+        self.stats.record(frame_time);
+        // What to show: between the last two physics states.
+        let drawn = sim.drawn();
+        // The camera glides towards it, in real frame time.
+        self.camera
+            .update(drawn.ball, frame_time, visible_half_height(backend));
+        self.hud.update(sim, steps, &self.stats, self.camera.mode);
+
         let screen = backend.screen();
         // The mouse wheel may have zoomed the camera; keep it in range.
         let zoom = view::clamp_zoom(backend.zoom(), screen.scale);
+        let look_at = self.camera.position;
         backend.set_camera(to_render(look_at), zoom);
 
         // ═══════════════════════════════════════════════════════════════
@@ -156,11 +180,18 @@ impl Renderer {
         }
 
         // HUD, in screen space.
-        for (i, line) in hud.lines().enumerate() {
+        for (i, line) in self.hud.lines().enumerate() {
             let (x, y) = hud::line_position(i, screen.scale);
             backend.text(line, Vec2::new(x, y), hud::font_size(screen.scale), WHITE);
         }
     }
+}
+
+/// Metres visible above and below the camera centre, for framing.
+fn visible_half_height(backend: &impl RenderBackend) -> f64 {
+    let screen = backend.screen();
+    let zoom = view::clamp_zoom(backend.zoom(), screen.scale);
+    view::visible_half_height(screen.height, zoom)
 }
 
 /// Physics position (f64 metres) -> render position (f32 metres, what
@@ -257,9 +288,6 @@ pub mod fakes {
 mod tests {
     use super::fakes::RecordingBackend;
     use super::*;
-    use crate::camera::CameraMode;
-    use crate::hud::FrameStats;
-    use crate::simulation::Simulation;
     use physics::{Body, Circle, World};
 
     const BALL: Visual = Visual {
@@ -274,39 +302,43 @@ mod tests {
         scale: 1.0,
     };
 
-    fn drawn_at(x: f64, y: f64) -> RenderState {
-        RenderState {
-            ball: DVec2::new(x, y),
+    const FRAME: f64 = 1.0 / 64.0;
+
+    /// A ball resting on the ground at `x` metres: it doesn't move, so
+    /// drawn positions are exact.
+    fn resting_at(x: f64) -> Scenario {
+        let ball = Body {
+            position: DVec2::new(x, 0.4),
+            velocity: DVec2::ZERO,
+        };
+        Scenario {
+            world: World::new(ball, Circle { radius: 0.4 }),
+            ball_visual: BALL,
+            background: Color::rgb(0.0, 0.0, 0.0),
         }
     }
 
-    /// A HUD with some text in it.
-    fn hud() -> Hud {
-        let ball = Body {
-            position: DVec2::new(0.0, 0.4),
-            velocity: DVec2::ZERO,
-        };
-        let sim = Simulation::new(World::new(ball, Circle { radius: 0.4 }), 1.0 / 64.0);
-        let mut hud = Hud::default();
-        hud.update(&sim, 0, &FrameStats::default(), CameraMode::Follow);
-        hud
+    /// The scenario's simulation, plus a renderer drawing it on `backend`.
+    fn setup(scenario: &Scenario, backend: &mut RecordingBackend) -> (Simulation, Renderer) {
+        let sim = Simulation::new(scenario.world.clone(), FRAME);
+        (sim, Renderer::new(backend, scenario))
     }
 
     #[test]
-    fn creates_one_proxy_from_the_visual_and_sets_the_starting_zoom() {
+    fn creates_one_proxy_from_the_scenario_and_sets_the_starting_zoom() {
         let mut backend = RecordingBackend::new(SCREEN);
-        Renderer::new(&mut backend, &BALL);
+        setup(&resting_at(0.0), &mut backend);
         assert_eq!(backend.proxies.len(), 1);
         assert_eq!(backend.proxies[0].0, BALL);
         assert_eq!(backend.zoom, view::initial_zoom(1.0));
     }
 
     #[test]
-    fn places_the_proxy_at_the_drawn_position() {
+    fn places_the_proxy_where_the_simulation_says() {
         let mut backend = RecordingBackend::new(SCREEN);
-        let renderer = Renderer::new(&mut backend, &BALL);
-        renderer.draw_frame(&mut backend, &drawn_at(3.5, 2.25), DVec2::ZERO, &hud());
-        assert_eq!(backend.proxies[0].1, Some(Vec2::new(3.5, 2.25)));
+        let (sim, mut renderer) = setup(&resting_at(3.5), &mut backend);
+        renderer.draw_frame(&mut backend, &sim, 0, FRAME);
+        assert_eq!(backend.proxies[0].1, Some(Vec2::new(3.5, 0.4)));
     }
 
     #[test]
@@ -314,52 +346,51 @@ mod tests {
         // Retained mode: the proxy lives across frames; only its position
         // is updated.
         let mut backend = RecordingBackend::new(SCREEN);
-        let renderer = Renderer::new(&mut backend, &BALL);
-        for x in 0..3 {
-            renderer.draw_frame(&mut backend, &drawn_at(x as f64, 1.0), DVec2::ZERO, &hud());
+        let (sim, mut renderer) = setup(&resting_at(0.0), &mut backend);
+        for _ in 0..3 {
+            renderer.draw_frame(&mut backend, &sim, 0, FRAME);
         }
         assert_eq!(backend.proxies.len(), 1);
-        assert_eq!(backend.proxies[0].1, Some(Vec2::new(2.0, 1.0)));
     }
 
     #[test]
-    fn camera_looks_where_it_is_told() {
+    fn camera_starts_framing_the_ball() {
         let mut backend = RecordingBackend::new(SCREEN);
-        let renderer = Renderer::new(&mut backend, &BALL);
-        let look_at = DVec2::new(40.0, 12.0);
-        renderer.draw_frame(&mut backend, &drawn_at(0.0, 0.0), look_at, &hud());
-        assert_eq!(backend.camera_at, Some(Vec2::new(40.0, 12.0)));
+        let (sim, mut renderer) = setup(&resting_at(40.0), &mut backend);
+        renderer.draw_frame(&mut backend, &sim, 0, FRAME);
+        assert_eq!(backend.camera_at.map(|at| at.x), Some(40.0));
+    }
+
+    #[test]
+    fn camera_mode_can_be_switched() {
+        let mut backend = RecordingBackend::new(SCREEN);
+        let (sim, mut renderer) = setup(&resting_at(0.0), &mut backend);
+        renderer.toggle_camera();
+        renderer.draw_frame(&mut backend, &sim, 0, FRAME);
+        assert!(
+            backend
+                .texts
+                .iter()
+                .any(|(t, _, _)| t.contains("camera: fixed"))
+        );
     }
 
     #[test]
     fn zoom_from_the_mouse_wheel_is_kept_within_limits() {
         let mut backend = RecordingBackend::new(SCREEN);
-        let renderer = Renderer::new(&mut backend, &BALL);
+        let (sim, mut renderer) = setup(&resting_at(0.0), &mut backend);
         backend.zoom = 10_000.0; // scrolled far in
-        renderer.draw_frame(&mut backend, &drawn_at(0.0, 0.0), DVec2::ZERO, &hud());
+        renderer.draw_frame(&mut backend, &sim, 0, FRAME);
         assert_eq!(backend.zoom, view::clamp_zoom(10_000.0, 1.0));
         assert!(backend.zoom < 10_000.0);
     }
 
     #[test]
-    fn visible_half_height_uses_the_clamped_zoom() {
-        let mut backend = RecordingBackend::new(SCREEN);
-        let renderer = Renderer::new(&mut backend, &BALL);
-        backend.zoom = 10_000.0;
-        let clamped = view::clamp_zoom(10_000.0, 1.0);
-        assert_eq!(
-            renderer.visible_half_height(&backend),
-            view::visible_half_height(600.0, clamped)
-        );
-    }
-
-    #[test]
     fn ground_line_and_ruler_span_the_visible_range() {
         let mut backend = RecordingBackend::new(SCREEN);
-        let renderer = Renderer::new(&mut backend, &BALL);
+        let (sim, mut renderer) = setup(&resting_at(100.0), &mut backend);
         backend.zoom = 20.0; // 1000 px / 20 px/m = 50 m across
-        let look_at = DVec2::new(100.0, 10.0);
-        renderer.draw_frame(&mut backend, &drawn_at(0.0, 0.0), look_at, &hud());
+        renderer.draw_frame(&mut backend, &sim, 0, FRAME);
         // The ground: one line across the visible range, at y = 0.
         assert_eq!(
             backend.lines[0],
@@ -371,16 +402,25 @@ mod tests {
     }
 
     #[test]
-    fn every_hud_line_is_drawn_in_order() {
+    fn hud_lines_are_drawn_top_to_bottom() {
         let mut backend = RecordingBackend::new(SCREEN);
-        let renderer = Renderer::new(&mut backend, &BALL);
-        let hud = hud();
-        renderer.draw_frame(&mut backend, &drawn_at(0.0, 0.0), DVec2::ZERO, &hud);
-        let drawn: Vec<&str> = backend.texts.iter().map(|(t, _, _)| t.as_str()).collect();
-        let expected: Vec<&str> = hud.lines().collect();
-        assert_eq!(drawn, expected);
+        let (sim, mut renderer) = setup(&resting_at(0.0), &mut backend);
+        renderer.draw_frame(&mut backend, &sim, 2, FRAME);
+        assert_eq!(backend.texts[0].0, "-- FPS"); // not measured yet
+        assert_eq!(backend.texts[1].0, "2 physics steps this frame");
         let (x, y) = hud::line_position(1, 1.0);
         assert_eq!(backend.texts[1].1, Vec2::new(x, y));
+    }
+
+    #[test]
+    fn fps_appears_once_half_a_second_of_frames_is_measured() {
+        let mut backend = RecordingBackend::new(SCREEN);
+        let (sim, mut renderer) = setup(&resting_at(0.0), &mut backend);
+        for _ in 0..32 {
+            backend.texts.clear();
+            renderer.draw_frame(&mut backend, &sim, 0, FRAME);
+        }
+        assert_eq!(backend.texts[0].0, "64 FPS (15.6 ms per frame)");
     }
 
     #[test]
@@ -392,12 +432,10 @@ mod tests {
         };
         let mut normal = RecordingBackend::new(SCREEN);
         let mut double = RecordingBackend::new(retina);
-        let (a, b) = (
-            Renderer::new(&mut normal, &BALL),
-            Renderer::new(&mut double, &BALL),
-        );
-        a.draw_frame(&mut normal, &drawn_at(0.0, 0.0), DVec2::ZERO, &hud());
-        b.draw_frame(&mut double, &drawn_at(0.0, 0.0), DVec2::ZERO, &hud());
+        let (sim, mut a) = setup(&resting_at(0.0), &mut normal);
+        let (_, mut b) = setup(&resting_at(0.0), &mut double);
+        a.draw_frame(&mut normal, &sim, 0, FRAME);
+        b.draw_frame(&mut double, &sim, 0, FRAME);
         assert_eq!(double.texts[0].2, 2.0 * normal.texts[0].2);
     }
 
