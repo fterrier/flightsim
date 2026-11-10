@@ -44,11 +44,14 @@ The full plan, step by step, is in [ROADMAP.md](ROADMAP.md).
 
 ```
 crates/
-  physics/   library: simulation state + update functions (pure, no graphics)
-  app/       binary `flightsim`: game loop, camera, rendering, HUD
+  physics/        engine: physics (pure, no graphics)
+  engine/         engine core: game loop logic, camera, rendering decisions,
+                  input commands, the `Game` trait (no graphics library)
+  engine_kiss3d/  engine platform layer: window, run loop, kiss3d rendering
+  flightsim/      the game: scenarios, key bindings, HUD; the `flightsim` binary
 ```
 
-See [ROADMAP.md](ROADMAP.md) "Architecture" for the layers inside `app`.
+See [ROADMAP.md](ROADMAP.md) "Architecture" for what each part does.
 
 ## Run
 
@@ -67,19 +70,19 @@ See [ROADMAP.md](ROADMAP.md) "Architecture" for the layers inside `app`.
    ```sh
    git clone git@github.com:fterrier/flightsim.git
    cd flightsim
-   cargo run -p app
+   cargo run -p flightsim
    ```
 
    The first build downloads and compiles dependencies, so it takes a bit
    longer. For a faster simulation, build with optimisations:
-   `cargo run -p app --release`.
+   `cargo run -p flightsim --release`.
 
 What you see depends on how far the [ROADMAP](ROADMAP.md) has got. To run
 the program as it was after a given step:
 
 ```sh
 git checkout step-00      # any step tag: step-00, step-01, ...
-cargo run -p app
+cargo run -p flightsim
 git checkout master       # back to the latest version
 ```
 
@@ -88,10 +91,10 @@ git checkout master       # back to the latest version
 | Key | Action |
 |---|---|
 | `Esc` | Quit |
-| `R` | Throw the ball again (restarts sim and real time) |
-| `C` | Switch camera: follow (glides after the ball) / fixed |
-| `L` (hold) | Debug: slow frames (+50 ms each, ~15 FPS). The simulation keeps real-time pace. |
-| `K` (hold) | Debug: stalled frames (+400 ms each). Frame time is capped, so sim time falls behind real time. |
+| `R` | Throw the balls again (reloads the scene; restarts sim and real time) |
+| `C` | Switch camera: follow (glides after the orange ball) / fixed |
+| `L` | Debug, on/off: slow frames (+50 ms each, ~15 FPS). The simulation keeps real-time pace. |
+| `K` | Debug, on/off: stalled frames (+400 ms each). Frame time is capped, so sim time falls behind real time. |
 | Mouse wheel | Zoom in / out (limited; the camera reframes to keep the ground in view) |
 
 Each step that adds controls updates this table.
@@ -102,7 +105,7 @@ Each step that adds controls updates this table.
 cargo test --workspace                                 # run all tests
 cargo fmt --all                                        # format code
 cargo clippy --workspace --all-targets -- -D warnings  # lint
-cargo llvm-cov --workspace --ignore-filename-regex 'crates/app/src/(main|kiss3d_backend)\.rs'  # coverage
+cargo llvm-cov --workspace --ignore-filename-regex 'crates/(engine_kiss3d/|flightsim/src/main\.rs)'  # coverage
 ```
 
 Coverage needs `cargo install cargo-llvm-cov` once.

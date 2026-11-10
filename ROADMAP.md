@@ -16,6 +16,7 @@ git checkout step-01            # the code as it was after step 1
 | ✅ | **1. Window + game loop** | A dot moving at constant speed, followed by the camera; FPS and sim-time overlay; keys to simulate slow frames | Fixed-timestep accumulator, update vs render, spiral of death, world vs screen space, camera, retained scene + render proxies |
 | ✅ | **2. Falling ball** | A ball drops and stops on the ground | Numerical integration (semi-implicit Euler), testing against an analytic solution |
 | ✅ | **3. Smooth 2D camera** | Motion stays smooth at any display rate; the camera glides after the ball, follows it vertically, zoom is limited; a key switches follow / fixed camera | Interpolation between physics states, frame-rate-independent smoothing, dead zones, camera as a tested module |
+| ✅ | **3b. Engine / game split** | Same picture; the code is now a reusable engine plus a game built on it | Engine vs game (and the dependency direction), `Game` trait, engine-owned input and the Command pattern, humble platform layer, separate real/fixed clocks |
 | ⬜ | **4. Ball in 3D** | A ball thrown in any direction over a ground grid, lit in 3D | `DVec3`, axis conventions: NED physics vs y-up graphics, converted in one place in the renderer (see decision below) |
 | ⬜ | **5. 3D cameras** | Chase camera (smoothed, behind the target) and orbit camera (mouse), switched with a key | 3D camera maths: look-at, spherical coordinates, smoothing in 3D |
 | ⬜ | **6. Point-mass plane** | Throttle and pitch keys; the plane rolls, lifts off, climbs, stalls (moving in the vertical plane) | Mass, lift, drag, thrust, weight, air density, angle of attack |
@@ -48,40 +49,51 @@ rotation maths (quaternions) to step 8.
 
 ## Architecture
 
+The code is split like every game engine: a reusable **engine**, and the
+**game** built on it. The game depends on the engine, never the reverse,
+and the crate boundaries make the compiler enforce it.
+
 ```
 crates/
-  physics/   pure simulation: state structs + functions that update them
-  app/       everything else, in layers:
-
-  platform     main.rs            loads the scenario; window, keyboard,
-                                  clock, the game loop                     (humble)
-  content      scenario.rs        what exists and what it looks like (a "level")
-  simulation   simulation.rs      physics world + fixed steps + interpolation
-               timestep.rs        the fixed-timestep clock
-  presentation render.rs          Renderer: proxies, debug drawing, HUD,
-                                  against the RenderBackend interface
-               camera.rs          the camera: where it looks (smooth
-                                  follow), zoom, what's visible
-               hud.rs             screen-space debug text, FPS
-  backend      kiss3d_backend.rs  RenderBackend with kiss3d, 1 call/method (humble)
+  physics/        ENGINE  physics: bodies, colliders, integration      (pure)
+  engine/         ENGINE  core, no graphics library, fully tested:
+                    engine.rs       Engine: runs a frame; the `Game` trait
+                    simulation.rs   physics world + fixed steps + interpolation
+                    timestep.rs     the fixed-timestep clock
+                    camera.rs       the camera: smooth follow, zoom, what's visible
+                    render.rs       Renderer (proxies, debug drawing) against
+                                    the RenderBackend interface
+                    hud.rs          text overlay; FrameStats (FPS, real time)
+                    input.rs        Key, InputEvent, Command
+                    scene.rs        the scene format (objects = body + visual)
+  engine_kiss3d/  ENGINE  platform layer: window, run loop, input
+                          translation, RenderBackend with kiss3d   (humble)
+  flightsim/      GAME    what game it is: scenarios, key bindings, HUD
+                          lines; main() = engine_kiss3d::run(FlightSim)
 ```
+
+A game plugs in through `engine::Game`: its physics rate, its scene, its
+input bindings (input event -> `Command`) and its own HUD lines.
+Everything else is the engine's.
 
 Rules:
 
 1. **Physics never knows about time sources, input devices or graphics.**
    It exposes plain data and functions like `step(&mut state, &controls, dt)`.
-2. **The app owns the loop.** It reads the clock, polls input, calls physics
-   a whole number of fixed steps, then draws.
+2. **The engine owns the loop**, not the game. The platform layer reads
+   the clock and input; `Engine` runs a whole number of fixed physics
+   steps, then draws. The game only supplies content, bindings and HUD.
 3. **Rendering only reads** simulation state, never writes it. All logic
-   lives in tested modules; `main.rs` and `kiss3d_backend.rs` are humble
-   shells around them (see AGENTS.md "Coverage").
-4. **New crates only when a boundary hurts.** Likely future splits:
+   lives in tested code; the `engine_kiss3d` crate and the game's
+   `main.rs` are humble shells around it (see AGENTS.md "Coverage").
+4. **New crates only when a boundary hurts.** The engine/game and
+   core/platform boundaries did (step 3b). Likely future splits:
    `aircraft` (data loading), `collision`.
 5. **Physics → scene in one place.** Graphics keep *render proxies*
    (scene nodes) for simulated objects; once per frame, one place copies
-   the (interpolated) physics state into them: `Renderer::draw_frame`, in
-   `render.rs`.
-6. **Content is data.** A scenario (a "level") lists objects, each
+   the (interpolated) physics state into them: `Renderer::draw`, in
+   `engine/src/render.rs`.
+6. **Content is data.** A scene (a "level", defined by the game) lists objects, each
    described whole: its `Body` (motion + collider) for the simulation and
    its `Visual` (shape + colour, later a glTF mesh + material) for the
    renderer. Loading splits them; object `i` becomes physics body `i` and
@@ -201,7 +213,7 @@ harder to read. So:
   behaviour lives in free functions taking only the components they need
   (future systems). A `World` struct holds everything.
 - **Physics stays ECS-agnostic forever.** Physics functions take components
-  (`&mut Body`), never a `World` or an ECS query. Only the app/world layer
+  (`&mut Motion`), never a `World` or an ECS query. Only the engine layer
   knows how entities are stored. This keeps the choice reversible.
 - **Step 11: introduce a real ECS** when the second kind of entity arrives.
   Options to decide then: write a minimal one ourselves (~200 lines, great
@@ -221,7 +233,8 @@ allocation.
 One rule applies from the start, because it costs nothing in
 readability: **a steady-state frame allocates no heap memory** (iterators
 instead of temporary `Vec`s, text buffers reused). A test enforces it with
-a counting allocator (`crates/app/src/alloc_count.rs`).
+a counting allocator (`crates/engine/src/alloc_count.rs`): a full
+`Engine` frame, simulation to HUD, allocates nothing.
 
 The rest isn't measurable with one entity, so steps 1-10 favour
 readability. At step 11, when entities multiply:

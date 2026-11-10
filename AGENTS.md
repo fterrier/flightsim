@@ -69,13 +69,13 @@ Bug fixes start with a test that reproduces the bug.
 
 Enforced in CI with [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov).
 
-Two files are excluded, because they need a real window and GPU, which
-CI doesn't have:
+Excluded, because they need a real window and GPU, which CI doesn't
+have:
 
-- `crates/app/src/main.rs`: the platform shell (window, keyboard, clock,
-  game loop).
-- `crates/app/src/kiss3d_backend.rs`: the `RenderBackend` implemented with
-  kiss3d, one kiss3d call per method.
+- the `engine_kiss3d` crate: the platform layer (window, run loop, input
+  translation) and the `RenderBackend` implemented with kiss3d, one
+  kiss3d call per method;
+- `crates/flightsim/src/main.rs`: one line, `engine_kiss3d::run(...)`.
 
 Both are "humble objects" (Meszaros, *xUnit Test Patterns*): they must
 contain **no logic**. Anything that decides something (timing, input
@@ -95,10 +95,10 @@ All four must pass (CI runs the same):
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-cargo llvm-cov --workspace --fail-under-lines 95 --ignore-filename-regex 'crates/app/src/(main|kiss3d_backend)\.rs'
+cargo llvm-cov --workspace --fail-under-lines 95 --ignore-filename-regex 'crates/(engine_kiss3d/|flightsim/src/main\.rs)'
 ```
 
-Also run the app (`cargo run -p app`) when the step changes what's on
+Also run the game (`cargo run -p flightsim`) when the step changes what's on
 screen.
 
 ## Code rules
@@ -117,6 +117,10 @@ screen.
   `a_steady_state_frame_allocates_nothing` test (`alloc_count.rs`).
 - Separate data by concept, as engines do: a body (motion) is not its
   collider (shape); simulation state is not render state.
+- **Engine vs game**: the `physics`, `engine` and `engine_kiss3d` crates
+  must never know which game they run (no scenario, key binding or
+  game-specific text in them). Game-specific code goes in `flightsim`,
+  plugged in through the `engine::Game` trait.
 
 ## Git
 

@@ -1,0 +1,12 @@
+[package]
+name = "flightsim"
+version = "0.1.0"
+description = "The flight simulator game: scenarios, input bindings, HUD. Built on the engine."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+physics.workspace = true
+engine.workspace = true
+engine_kiss3d.workspace = true

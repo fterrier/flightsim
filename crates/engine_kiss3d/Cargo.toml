@@ -1,0 +1,12 @@
+[package]
+name = "engine_kiss3d"
+version = "0.1.0"
+description = "Engine platform layer on kiss3d: window, event loop, input, render backend."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+engine.workspace = true
+glam.workspace = true
+kiss3d.workspace = true

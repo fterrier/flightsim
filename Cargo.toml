@@ -1,8 +1,13 @@
 # Cargo workspace: one repository, several crates (Rust packages) built together.
-# See ROADMAP.md for why there are only two crates and when we add more.
+# See ROADMAP.md "Architecture" for what each crate is (engine vs game).
 [workspace]
 resolver = "3"
-members = ["crates/physics", "crates/app"]
+members = [
+    "crates/physics",
+    "crates/engine",
+    "crates/engine_kiss3d",
+    "crates/flightsim",
+]
 
 # Settings shared by every crate (they opt in with `edition.workspace = true`, ...).
 [workspace.package]
@@ -13,6 +18,8 @@ publish = false
 # Dependency versions are declared once here, crates refer to them by name.
 [workspace.dependencies]
 physics = { path = "crates/physics" }
+engine = { path = "crates/engine" }
+engine_kiss3d = { path = "crates/engine_kiss3d" }
 # 2D/3D vector maths (f64 types like DVec2 for physics).
 glam = "0.34"
 # Window, input and rendering (2D now, 3D + glTF models later), on wgpu.

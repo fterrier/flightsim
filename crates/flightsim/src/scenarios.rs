@@ -1,47 +1,16 @@
-//! The scenario: what exists in the world and what it looks like, defined
-//! in one place. Engines call this a scene or a level (Godot's `.tscn`,
-//! Unity scenes and prefabs, Unreal levels): each object is described
-//! *whole*, physics and looks together. Loading splits it: the bodies go to
-//! the simulation (`world()`), the visuals to the renderer. The game loop
-//! never needs to know what's inside.
+//! The game's scenarios: what exists in the world and what it looks like,
+//! as engine `Scene`s.
 
-use physics::{Body, Circle, DVec2, Motion, World};
-
-use crate::render::{Color, Shape, Visual};
-
-/// One object of the scenario: everything about it, in one place.
-// TODO(step-11): becomes an ECS "bundle": the group of components an
-// entity is spawned with.
-pub struct SceneObject {
-    /// How it moves and what it collides with: for the simulation.
-    pub body: Body,
-    /// What it looks like: for the renderer.
-    pub visual: Visual,
-}
-
-pub struct Scenario {
-    /// The objects, in order: object `i` becomes physics body `i` and
-    /// render proxy `i`. That shared index is what links them.
-    pub objects: Vec<SceneObject>,
-    /// Index of the object the camera and HUD follow.
-    pub focus: usize,
-    /// Sky colour, in linear light (see `render::Color`).
-    pub background: Color,
-}
-
-impl Scenario {
-    /// The physics side of the scenario: one body per object.
-    pub fn world(&self) -> World {
-        World::new(self.objects.iter().map(|object| object.body).collect())
-    }
-}
+use engine::render::{Color, Shape, Visual};
+use engine::scene::{Scene, SceneObject};
+use physics::{Body, Circle, DVec2, Motion};
 
 /// Three balls resting on the ground, thrown at once: a small fast one, a
 /// high one (followed by the camera) and a big flat one. They pass through
 /// each other: collisions between objects come in step 12.
 // TODO(step-09): scenarios become data files, like the aircraft.
-pub fn ball_throws() -> Scenario {
-    Scenario {
+pub fn ball_throws() -> Scene {
+    Scene {
         objects: vec![
             ball(-3.0, 0.3, DVec2::new(6.0, 14.0), Color::rgb(0.1, 0.6, 1.0)),
             ball(0.0, 0.4, DVec2::new(8.0, 20.0), Color::rgb(1.0, 0.25, 0.0)),
@@ -98,16 +67,8 @@ mod tests {
     }
 
     #[test]
-    fn the_world_has_one_body_per_object_in_the_same_order() {
-        // The order is the link between a body and its render proxy.
-        let scenario = ball_throws();
-        let bodies: Vec<_> = scenario.objects.iter().map(|o| o.body).collect();
-        assert_eq!(scenario.world().bodies, bodies);
-    }
-
-    #[test]
     fn the_camera_focuses_on_an_existing_object() {
-        let scenario = ball_throws();
-        assert!(scenario.focus < scenario.objects.len());
+        let scene = ball_throws();
+        assert!(scene.focus < scene.objects.len());
     }
 }

@@ -1,0 +1,11 @@
+[package]
+name = "engine"
+version = "0.1.0"
+description = "Engine core: game loop logic, simulation, camera, rendering decisions. No graphics library, fully testable."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+physics.workspace = true
+glam.workspace = true

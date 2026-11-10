@@ -61,11 +61,12 @@ pub struct Body {
 // Systems like `integrate` won't change: they take components.
 #[derive(Clone, Debug, PartialEq)]
 pub struct World {
-    /// Simulated time since the start, in seconds. Only `step` advances it.
+    /// Simulated time since the start, in seconds. Private, so only `step`
+    /// can advance it: read it with [`World::time`].
     // TODO(step-10): replays identify moments by step number; count steps
     // in a `u64` (exact) and derive time as steps × dt, instead of summing
     // a float that slowly accumulates rounding error.
-    pub time: f64,
+    time: f64,
     /// All simulated objects, stored contiguously. Their index identifies
     /// them (the renderer's proxy `i` shows body `i`).
     pub bodies: Vec<Body>,
@@ -74,6 +75,11 @@ pub struct World {
 impl World {
     pub fn new(bodies: Vec<Body>) -> Self {
         Self { time: 0.0, bodies }
+    }
+
+    /// Simulated time since the start, in seconds.
+    pub fn time(&self) -> f64 {
+        self.time
     }
 
     /// Advances the whole simulation by exactly `dt` seconds.
@@ -255,7 +261,7 @@ mod tests {
     #[test]
     fn world_starts_at_time_zero_with_its_bodies() {
         let world = World::new(vec![thrown_ball(), resting_ball(5.0, 1.0)]);
-        assert_eq!(world.time, 0.0);
+        assert_eq!(world.time(), 0.0);
         assert_eq!(world.bodies, [thrown_ball(), resting_ball(5.0, 1.0)]);
     }
 
@@ -266,12 +272,12 @@ mod tests {
         let mut world = World::new(vec![thrown_ball()]);
         let height = |world: &World| world.bodies[0].motion.position.y;
 
-        while world.time < impact - 2.0 * DT {
+        while world.time() < impact - 2.0 * DT {
             world.step(DT);
         }
         assert!(height(&world) > RADIUS, "landed too early");
 
-        while world.time < impact + 2.0 * DT {
+        while world.time() < impact + 2.0 * DT {
             world.step(DT);
         }
         assert_eq!(height(&world), RADIUS, "not landed in time");

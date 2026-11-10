@@ -2,7 +2,7 @@
 //! that decides how many fixed steps to run, and where to draw each body
 //! between two steps (interpolation).
 //!
-//! This is the heart of the game loop, kept out of `main.rs` so it is
+//! This is the heart of the game loop, kept out of the platform layer so it is
 //! tested. Its fields are private to protect one invariant: `previous`
 //! always holds the positions *just before* the latest physics step.
 //! Nothing outside can step the world without updating it, or forget to
@@ -131,7 +131,7 @@ mod tests {
     fn advance_runs_as_many_fixed_steps_as_real_time_allows() {
         let mut sim = one_ball();
         assert_eq!(sim.advance(2.25 * DT), 2);
-        assert_eq!(sim.world().time, 2.0 * DT);
+        assert_eq!(sim.world().time(), 2.0 * DT);
         assert_eq!(sim.world().bodies[0].motion.position.x, 2.0);
         assert_eq!(sim.clock().alpha(), 0.25);
     }

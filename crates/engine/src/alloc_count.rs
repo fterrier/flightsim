@@ -50,10 +50,10 @@ pub fn allocations_in(f: impl FnOnce()) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Engine;
+    use crate::engine::testing::TestGame;
+    use crate::render::Screen;
     use crate::render::fakes::NullBackend;
-    use crate::render::{Renderer, Screen};
-    use crate::scenario;
-    use crate::simulation::Simulation;
 
     #[test]
     fn the_counter_sees_allocations() {
@@ -66,29 +66,24 @@ mod tests {
 
     #[test]
     fn a_steady_state_frame_allocates_nothing() {
-        let scenario = scenario::ball_throws();
-        let mut sim = Simulation::new(scenario.world(), 1.0 / 120.0);
-        // The renderer runs for real, against a backend that draws nothing.
+        // The whole engine runs for real (simulation, camera, renderer,
+        // HUD, the game's HUD lines) against a backend that draws nothing.
         let mut backend = NullBackend(Screen {
             width: 2560.0,
             height: 1440.0,
             scale: 2.0,
         });
-        let mut renderer = Renderer::new(&mut backend, &scenario);
-
-        // Everything the game loop does per frame; only kiss3d itself is
-        // replaced (by `NullBackend`).
-        let mut frame = || {
-            let frame_time = 1.0 / 60.0;
-            let steps = sim.advance(frame_time);
-            renderer.draw_frame(&mut backend, &sim, steps, frame_time);
+        let game = TestGame {
+            balls: vec![(-3.0, 6.0), (0.0, 8.0), (3.0, 10.0)],
+            focus: 1,
         };
+        let mut engine = Engine::new(&mut backend, game);
 
         // 10 simulated minutes of frames: numbers on the HUD grow longer,
-        // the ball lands, the FPS readout appears... still no allocation.
+        // the FPS readout appears... still no allocation.
         let count = allocations_in(|| {
             for _ in 0..36_000 {
-                frame();
+                engine.frame(&mut backend, 1.0 / 60.0);
             }
         });
         assert_eq!(count, 0);

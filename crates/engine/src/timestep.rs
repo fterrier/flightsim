@@ -26,8 +26,6 @@ pub struct FixedTimestep {
     dt: f64,
     /// Real time not yet consumed by physics steps, in seconds.
     accumulator: f64,
-    /// Total real time fed in, uncapped, in seconds (for display).
-    real_time: f64,
 }
 
 impl FixedTimestep {
@@ -35,14 +33,12 @@ impl FixedTimestep {
         Self {
             dt,
             accumulator: 0.0,
-            real_time: 0.0,
         }
     }
 
     /// Feeds the real time the last frame took (in seconds) and returns how
     /// many physics steps to run now.
     pub fn advance(&mut self, frame_time: f64) -> u32 {
-        self.real_time += frame_time;
         self.accumulator += frame_time.min(MAX_FRAME_TIME);
 
         let mut steps = 0;
@@ -67,10 +63,6 @@ impl FixedTimestep {
 
     pub fn dt(&self) -> f64 {
         self.dt
-    }
-
-    pub fn real_time(&self) -> f64 {
-        self.real_time
     }
 }
 
@@ -99,10 +91,9 @@ mod tests {
     #[test]
     fn long_frame_is_capped_to_avoid_the_spiral_of_death() {
         let mut clock = FixedTimestep::new(DT);
-        // A 10 s freeze only produces MAX_FRAME_TIME worth of steps.
+        // A 10 s freeze only produces MAX_FRAME_TIME worth of steps: the
+        // simulation falls behind real time instead of catching up.
         assert_eq!(clock.advance(10.0), (MAX_FRAME_TIME / DT) as u32);
-        // Real time still counts the full freeze: the sim fell behind.
-        assert_eq!(clock.real_time(), 10.0);
     }
 
     #[test]
