@@ -39,7 +39,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
 static ALLOCATOR: CountingAllocator = CountingAllocator;
 
 /// Runs `f` and returns how many heap allocations it made on this thread.
-pub fn allocations_in(f: impl FnOnce()) -> usize {
+fn allocations_in(f: impl FnOnce()) -> usize {
     ALLOCATIONS.set(0);
     COUNTING.set(true);
     f();

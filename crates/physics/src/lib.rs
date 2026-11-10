@@ -124,7 +124,7 @@ impl World {
 /// (springs) in step 12. Semi-implicit Euler keeps energy bounded, for the
 /// same cost. Its error is proportional to `dt` ("first-order"); that's
 /// what the tests check against the exact free-fall formula.
-pub fn integrate(motion: &mut Motion, acceleration: DVec2, dt: f64) {
+fn integrate(motion: &mut Motion, acceleration: DVec2, dt: f64) {
     motion.velocity += acceleration * dt;
     motion.position += motion.velocity * dt;
 }
@@ -138,7 +138,7 @@ pub fn integrate(motion: &mut Motion, acceleration: DVec2, dt: f64) {
 /// Sideways motion is kept, as there's no friction yet.
 // TODO(step-12): replace with landing gear contacts: spring-damper forces
 // at each wheel, plus rolling friction and brakes.
-pub fn ground_contact(motion: &mut Motion, shape: &Circle) {
+fn ground_contact(motion: &mut Motion, shape: &Circle) {
     if motion.position.y < shape.radius {
         motion.position.y = shape.radius;
         motion.velocity.y = motion.velocity.y.max(0.0);

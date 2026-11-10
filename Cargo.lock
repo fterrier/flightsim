@@ -839,7 +839,6 @@ version = "0.1.0"
 dependencies = [
  "engine",
  "engine_kiss3d",
- "physics",
 ]
 
 [[package]]

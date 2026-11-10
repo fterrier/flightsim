@@ -27,6 +27,14 @@ glam = "0.34"
 # See ROADMAP.md "Graphics" for why this library.
 kiss3d = "0.47"
 
+# Lints for every crate (each opts in with `[lints] workspace = true`).
+# `unreachable_pub`: an item marked `pub` that other crates can't reach
+# must say `pub(crate)` instead, so every `pub` you read is real public
+# API. (Allowed by default in rustc only because so much existing code
+# would trigger it; the Rust team intends to make it warn by default.)
+[workspace.lints.rust]
+unreachable_pub = "warn"
+
 # Dependencies (wgpu, image decoding...) are slow when unoptimised; compile
 # them with optimisations even in debug builds. Our own code stays
 # unoptimised so it compiles fast and is easy to debug.

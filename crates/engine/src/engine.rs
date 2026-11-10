@@ -20,6 +20,7 @@ use crate::input::{Command, InputEvent};
 use crate::render::{RenderBackend, Renderer, viewport};
 use crate::scene::Scene;
 use crate::simulation::Simulation;
+use physics::World;
 
 /// What a game provides to the engine.
 // TODO(step-06): a per-physics-step hook for game logic (mission rules, an
@@ -38,8 +39,10 @@ pub trait Game {
     fn command_for(&self, event: InputEvent) -> Option<Command>;
 
     /// The game's own HUD lines, written under the engine's diagnostics.
-    /// `focus` is the index of the object the camera follows.
-    fn write_hud(&self, sim: &Simulation, focus: usize, out: &mut String) -> fmt::Result;
+    /// The game gets read-only access to the world's *data* (bodies, time),
+    /// never to the simulation machinery. `focus` is the index of the
+    /// object the camera follows.
+    fn write_hud(&self, world: &World, focus: usize, out: &mut String) -> fmt::Result;
 }
 
 /// Whether the game loop should keep going.
@@ -149,7 +152,9 @@ impl<G: Game> Engine<G> {
         self.lag.delay()
     }
 
-    pub fn simulation(&self) -> &Simulation {
+    /// For tests, to check what the simulation did.
+    #[cfg(test)]
+    pub(crate) fn simulation(&self) -> &Simulation {
         &self.sim
     }
 
@@ -203,21 +208,21 @@ impl<G: Game> Engine<G> {
             self.camera.mode.name(),
             self.lag.name(),
         )
-        .and_then(|()| self.game.write_hud(&self.sim, self.scene.focus, out))
+        .and_then(|()| self.game.write_hud(self.sim.world(), self.scene.focus, out))
     }
 }
 
 /// A minimal game for tests: balls resting on the ground at given x
 /// positions, simple bindings, one HUD line of its own.
 #[cfg(test)]
-pub mod testing {
+pub(crate) mod testing {
     use super::*;
     use crate::input::Key;
     use crate::render::{Color, Shape, Visual, WHITE};
     use crate::scene::SceneObject;
     use physics::{Body, Circle, DVec2, Motion, STANDARD_GRAVITY};
 
-    pub struct TestGame {
+    pub(crate) struct TestGame {
         /// Where the balls start (x, metres) and how fast they slide (m/s).
         pub balls: Vec<(f64, f64)>,
         pub focus: usize,
@@ -263,8 +268,8 @@ pub mod testing {
             }
         }
 
-        fn write_hud(&self, sim: &Simulation, focus: usize, out: &mut String) -> fmt::Result {
-            let x = sim.world().bodies[focus].motion.position.x;
+        fn write_hud(&self, world: &World, focus: usize, out: &mut String) -> fmt::Result {
+            let x = world.bodies[focus].motion.position.x;
             write!(out, "test game: focus at x = {x:.1} m")
         }
     }

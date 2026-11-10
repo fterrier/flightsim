@@ -41,8 +41,8 @@ impl Color {
     }
 }
 
-pub const GREY: Color = Color::rgb(0.5, 0.5, 0.5);
-pub const WHITE: Color = Color::rgb(1.0, 1.0, 1.0);
+const GREY: Color = Color::rgb(0.5, 0.5, 0.5);
+pub(crate) const WHITE: Color = Color::rgb(1.0, 1.0, 1.0);
 
 /// The geometry of a [`Visual`], in metres.
 // TODO(step-04): add `Sphere`, and boxes for a ground grid.
@@ -108,7 +108,7 @@ const MINOR_TICK: f64 = 0.4;
 /// to where the simulation says, plus world-space debug drawing, all as
 /// seen by a given camera. (The camera itself is a game-side object, as in
 /// engines; the HUD is a separate overlay, see `hud`.)
-pub struct Renderer {
+pub(crate) struct Renderer {
     /// One render proxy per scene object, in the same order as the world's
     /// bodies: proxy `i` shows body `i`.
     // TODO(step-11): keyed by entity ID instead of index; created when an
@@ -118,7 +118,7 @@ pub struct Renderer {
 
 impl Renderer {
     /// Creates the scene's render proxies and sets its background.
-    pub fn new(backend: &mut impl RenderBackend, scene: &Scene) -> Self {
+    pub(crate) fn new(backend: &mut impl RenderBackend, scene: &Scene) -> Self {
         backend.set_background(scene.background);
         Self {
             proxies: scene
@@ -130,7 +130,7 @@ impl Renderer {
     }
 
     /// Prepares the world for this frame: camera, proxies, debug drawing.
-    pub fn draw(&self, backend: &mut impl RenderBackend, sim: &Simulation, camera: &Camera) {
+    pub(crate) fn draw(&self, backend: &mut impl RenderBackend, sim: &Simulation, camera: &Camera) {
         let screen = backend.screen();
         // The camera thinks in logical pixels; the backend in physical ones.
         let look_at = camera.position;
@@ -164,7 +164,7 @@ impl Renderer {
 }
 
 /// The screen's size in logical pixels (what the camera works with).
-pub fn viewport(screen: Screen) -> DVec2 {
+pub(crate) fn viewport(screen: Screen) -> DVec2 {
     DVec2::new(screen.width as f64, screen.height as f64) / screen.scale as f64
 }
 
@@ -209,11 +209,11 @@ fn to_render(position: DVec2) -> Vec2 {
 
 /// Test doubles for `RenderBackend`, shared by tests in several modules.
 #[cfg(test)]
-pub mod fakes {
+pub(crate) mod fakes {
     use super::*;
 
     /// Records every call, so tests can check what was drawn.
-    pub struct RecordingBackend {
+    pub(crate) struct RecordingBackend {
         pub screen: Screen,
         pub background: Option<Color>,
         /// Latest camera zoom, physical px per metre.
@@ -227,7 +227,7 @@ pub mod fakes {
     }
 
     impl RecordingBackend {
-        pub fn new(screen: Screen) -> Self {
+        pub(crate) fn new(screen: Screen) -> Self {
             Self {
                 screen,
                 background: None,
@@ -268,7 +268,7 @@ pub mod fakes {
 
     /// Ignores everything, like Unreal's "null RHI": lets the renderer's
     /// logic run without any graphics, e.g. to measure its allocations.
-    pub struct NullBackend(pub Screen);
+    pub(crate) struct NullBackend(pub Screen);
 
     impl RenderBackend for NullBackend {
         fn screen(&self) -> Screen {

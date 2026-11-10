@@ -11,7 +11,7 @@
 use crate::timestep::FixedTimestep;
 use physics::{DVec2, World};
 
-pub struct Simulation {
+pub(crate) struct Simulation {
     world: World,
     clock: FixedTimestep,
     /// Each body's position just before the latest physics step, in the
@@ -30,7 +30,7 @@ pub struct Simulation {
 
 impl Simulation {
     /// Starts simulating `world` with physics steps of `dt` seconds.
-    pub fn new(world: World, dt: f64) -> Self {
+    pub(crate) fn new(world: World, dt: f64) -> Self {
         let previous = positions(&world).collect();
         Self {
             world,
@@ -43,7 +43,7 @@ impl Simulation {
     /// fixed physics steps as it calls for (often 0, 1 or 2) and returns
     /// how many ran.
     // TODO(step-06): take the pilot's controls and pass them to each step.
-    pub fn advance(&mut self, frame_time: f64) -> u32 {
+    pub(crate) fn advance(&mut self, frame_time: f64) -> u32 {
         let steps = self.clock.advance(frame_time);
         for _ in 0..steps {
             for (previous, current) in self.previous.iter_mut().zip(positions(&self.world)) {
@@ -62,7 +62,7 @@ impl Simulation {
     /// behind the simulation. The alternative, *extrapolating* ahead from
     /// the velocity, overshoots whenever something changes direction (like
     /// a ball landing).
-    pub fn drawn_positions(&self) -> impl Iterator<Item = DVec2> + '_ {
+    pub(crate) fn drawn_positions(&self) -> impl Iterator<Item = DVec2> + '_ {
         let alpha = self.clock.alpha();
         self.previous
             .iter()
@@ -71,12 +71,12 @@ impl Simulation {
     }
 
     /// Where to draw body number `index` now (see `drawn_positions`).
-    pub fn drawn_position(&self, index: usize) -> DVec2 {
+    pub(crate) fn drawn_position(&self, index: usize) -> DVec2 {
         let current = self.world.bodies[index].motion.position;
         self.previous[index].lerp(current, self.clock.alpha())
     }
 
-    pub fn world(&self) -> &World {
+    pub(crate) fn world(&self) -> &World {
         &self.world
     }
 

@@ -26,7 +26,7 @@ const TEXT_CAPACITY: usize = 1024;
 /// `Time<Real>`, as opposed to the simulation's fixed-step clock: compare
 /// the two to see whether the simulation keeps up.
 #[derive(Default)]
-pub struct FrameStats {
+pub(crate) struct FrameStats {
     /// Frames and seconds counted in the current window.
     frames: u32,
     elapsed: f64,
@@ -38,7 +38,7 @@ pub struct FrameStats {
 
 impl FrameStats {
     /// Records one frame that lasted `frame_time` seconds.
-    pub fn record(&mut self, frame_time: f64) {
+    pub(crate) fn record(&mut self, frame_time: f64) {
         self.real_time += frame_time;
         self.frames += 1;
         self.elapsed += frame_time;
@@ -50,22 +50,22 @@ impl FrameStats {
     }
 
     /// Average frames per second over the last complete window.
-    pub fn fps(&self) -> Option<f64> {
+    pub(crate) fn fps(&self) -> Option<f64> {
         self.fps
     }
 
     /// Seconds of real time since the simulation (re)started.
-    pub fn real_time(&self) -> f64 {
+    pub(crate) fn real_time(&self) -> f64 {
         self.real_time
     }
 
     /// Restarts the real-time clock, when the simulation restarts.
-    pub fn restart_clock(&mut self) {
+    pub(crate) fn restart_clock(&mut self) {
         self.real_time = 0.0;
     }
 }
 
-pub struct Hud {
+pub(crate) struct Hud {
     text: String,
 }
 
@@ -80,18 +80,18 @@ impl Default for Hud {
 impl Hud {
     /// Starts this frame's text: empties the buffer (keeping its memory,
     /// so nothing is allocated) and returns it to write lines into.
-    pub fn begin(&mut self) -> &mut String {
+    pub(crate) fn begin(&mut self) -> &mut String {
         self.text.clear();
         &mut self.text
     }
 
     /// The HUD text, line by line, top to bottom.
-    pub fn lines(&self) -> std::str::Lines<'_> {
+    pub(crate) fn lines(&self) -> std::str::Lines<'_> {
         self.text.lines()
     }
 
     /// Draws the text in the top-left corner, one line under another.
-    pub fn draw(&self, backend: &mut impl RenderBackend) {
+    pub(crate) fn draw(&self, backend: &mut impl RenderBackend) {
         let scale = backend.screen().scale;
         for (i, line) in self.lines().enumerate() {
             let (x, y) = line_position(i, scale);

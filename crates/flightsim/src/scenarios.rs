@@ -1,14 +1,15 @@
 //! The game's scenarios: what exists in the world and what it looks like,
 //! as engine `Scene`s.
 
-use engine::{Color, Scene, SceneObject, Shape, Visual};
-use physics::{Body, Circle, DVec2, Motion, STANDARD_GRAVITY};
+use engine::{
+    Body, Circle, Color, DVec2, Motion, STANDARD_GRAVITY, Scene, SceneObject, Shape, Visual,
+};
 
 /// Three balls resting on the ground, thrown at once: a small fast one, a
 /// high one (followed by the camera) and a big flat one. They pass through
 /// each other: collisions between objects come in step 12.
 // TODO(step-09): scenarios become data files, like the aircraft.
-pub fn ball_throws() -> Scene {
+pub(crate) fn ball_throws() -> Scene {
     Scene {
         objects: vec![
             ball(-3.0, 0.3, DVec2::new(6.0, 14.0), Color::rgb(0.1, 0.6, 1.0)),

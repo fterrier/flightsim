@@ -19,12 +19,12 @@
 use physics::DVec2;
 
 /// Starting zoom, logical pixels per metre.
-pub const DEFAULT_ZOOM: f32 = 15.0;
+pub(crate) const DEFAULT_ZOOM: f32 = 15.0;
 
 /// Zoom limits, logical pixels per metre: the mouse wheel can't zoom into a
 /// blur or out to nothing.
-pub const MIN_ZOOM: f32 = 3.0;
-pub const MAX_ZOOM: f32 = 60.0;
+const MIN_ZOOM: f32 = 3.0;
+pub(crate) const MAX_ZOOM: f32 = 60.0;
 
 /// Scroll distance (pixels; a mouse-wheel notch counts as 10) that doubles
 /// the zoom. Zoom changes exponentially with scrolling, so each notch
@@ -47,7 +47,7 @@ const DEAD_ZONE: f64 = 0.2;
 const MIN_HEIGHT: f64 = 0.5;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum CameraMode {
+pub(crate) enum CameraMode {
     /// Glides after the target.
     Follow,
     /// Stays where it is.
@@ -55,7 +55,7 @@ pub enum CameraMode {
 }
 
 impl CameraMode {
-    pub fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             CameraMode::Follow => "follow",
             CameraMode::Fixed => "fixed",
@@ -64,7 +64,7 @@ impl CameraMode {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct Camera {
+pub(crate) struct Camera {
     /// The point the camera looks at (centre of the screen), in metres.
     pub position: DVec2,
     pub mode: CameraMode,
@@ -74,7 +74,7 @@ pub struct Camera {
 }
 
 impl Camera {
-    pub fn new(position: DVec2) -> Self {
+    pub(crate) fn new(position: DVec2) -> Self {
         Self {
             position,
             mode: CameraMode::Follow,
@@ -83,18 +83,18 @@ impl Camera {
     }
 
     /// Logical pixels per metre.
-    pub fn zoom(&self) -> f32 {
+    pub(crate) fn zoom(&self) -> f32 {
         self.zoom
     }
 
     /// Zooms in (positive `scroll`) or out (negative), `scroll` being the
     /// scroll distance in pixels.
-    pub fn zoom_by(&mut self, scroll: f64) {
+    pub(crate) fn zoom_by(&mut self, scroll: f64) {
         let factor = 2.0_f64.powf(scroll / ZOOM_DOUBLING);
         self.zoom = (self.zoom as f64 * factor).clamp(MIN_ZOOM as f64, MAX_ZOOM as f64) as f32;
     }
 
-    pub fn toggle_mode(&mut self) {
+    pub(crate) fn toggle_mode(&mut self) {
         self.mode = match self.mode {
             CameraMode::Follow => CameraMode::Fixed,
             CameraMode::Fixed => CameraMode::Follow,
@@ -103,7 +103,7 @@ impl Camera {
 
     /// Half the visible width and height, in metres, for a `viewport` of
     /// that size in logical pixels.
-    pub fn visible_half_extents(&self, viewport: DVec2) -> DVec2 {
+    pub(crate) fn visible_half_extents(&self, viewport: DVec2) -> DVec2 {
         viewport / self.zoom as f64 / 2.0
     }
 
@@ -111,7 +111,7 @@ impl Camera {
     /// centred on it horizontally; vertically, moved only as far as needed
     /// to keep the target inside the dead zone, and never so low that the
     /// ground rises into the upper part of the screen.
-    pub fn desired_position(&self, target: DVec2, viewport: DVec2) -> DVec2 {
+    fn desired_position(&self, target: DVec2, viewport: DVec2) -> DVec2 {
         let half_height = self.visible_half_extents(viewport).y;
         let zone = DEAD_ZONE * half_height;
         let y = target
@@ -126,14 +126,14 @@ impl Camera {
 
     /// Frames `target` immediately, without gliding (at startup, or after
     /// a teleport where gliding across the world would look odd).
-    pub fn snap_to(&mut self, target: DVec2, viewport: DVec2) {
+    pub(crate) fn snap_to(&mut self, target: DVec2, viewport: DVec2) {
         let half_height = self.visible_half_extents(viewport).y;
         self.position = DVec2::new(target.x, target.y.max(MIN_HEIGHT * half_height));
     }
 
     /// Moves the camera towards `target` for one frame lasting
     /// `frame_time` seconds, on a `viewport` (logical pixels).
-    pub fn update(&mut self, target: DVec2, frame_time: f64, viewport: DVec2) {
+    pub(crate) fn update(&mut self, target: DVec2, frame_time: f64, viewport: DVec2) {
         if self.mode == CameraMode::Fixed {
             return;
         }

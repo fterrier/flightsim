@@ -19,9 +19,9 @@
 /// Without this cap, a slow frame means many physics steps next frame,
 /// which makes that frame slow too, which means even more steps... the
 /// "spiral of death".
-pub const MAX_FRAME_TIME: f64 = 0.25;
+pub(crate) const MAX_FRAME_TIME: f64 = 0.25;
 
-pub struct FixedTimestep {
+pub(crate) struct FixedTimestep {
     /// Duration of one physics step, in seconds.
     dt: f64,
     /// Real time not yet consumed by physics steps, in seconds.
@@ -29,7 +29,7 @@ pub struct FixedTimestep {
 }
 
 impl FixedTimestep {
-    pub fn new(dt: f64) -> Self {
+    pub(crate) fn new(dt: f64) -> Self {
         Self {
             dt,
             accumulator: 0.0,
@@ -38,7 +38,7 @@ impl FixedTimestep {
 
     /// Feeds the real time the last frame took (in seconds) and returns how
     /// many physics steps to run now.
-    pub fn advance(&mut self, frame_time: f64) -> u32 {
+    pub(crate) fn advance(&mut self, frame_time: f64) -> u32 {
         self.accumulator += frame_time.min(MAX_FRAME_TIME);
 
         let mut steps = 0;
@@ -57,11 +57,11 @@ impl FixedTimestep {
     /// physics state (interpolation). Without it, the drawn position only
     /// changes when a step happens; when frames get 1, then 2, then 1 steps,
     /// motion visibly stutters ("judder").
-    pub fn alpha(&self) -> f64 {
+    pub(crate) fn alpha(&self) -> f64 {
         self.accumulator / self.dt
     }
 
-    pub fn dt(&self) -> f64 {
+    pub(crate) fn dt(&self) -> f64 {
         self.dt
     }
 }
