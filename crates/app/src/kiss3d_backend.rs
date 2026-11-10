@@ -21,8 +21,8 @@ pub struct Kiss3dBackend {
     window: Window,
     /// Objects kiss3d keeps between frames (retained mode).
     scene: SceneNode2d,
-    /// Projects world space (metres, y up) onto the screen. The mouse wheel
-    /// changes its zoom.
+    /// Projects world space (metres, y up) onto the screen, as told by
+    /// `set_camera`.
     camera: PanZoomCamera2d,
     /// Render proxies, indexed by `ProxyId`.
     proxies: Vec<SceneNode2d>,
@@ -35,8 +35,11 @@ impl Kiss3dBackend {
     pub async fn new(title: &str, width: u32, height: u32, background: Color) -> Self {
         let mut window = Window::new_with_size(title, width, height).await;
         window.set_background_color(kiss3d_color(background));
+        // Our `Camera` steers and zooms: turn off kiss3d's own mouse
+        // handling (drag to pan; a zoom step of 1 makes the wheel a no-op).
         let mut camera = PanZoomCamera2d::new(Kiss3dVec2::ZERO, 1.0);
-        camera.rebind_drag_button(None); // our camera logic steers, not the mouse
+        camera.rebind_drag_button(None);
+        camera.set_zoom_step(1.0);
         Self {
             window,
             scene: SceneNode2d::empty(),
@@ -67,10 +70,6 @@ impl RenderBackend for Kiss3dBackend {
             height: self.window.height() as f32,
             scale: self.window.scale_factor() as f32,
         }
-    }
-
-    fn zoom(&self) -> f32 {
-        self.camera.zoom()
     }
 
     fn set_camera(&mut self, at: Vec2, zoom: f32) {

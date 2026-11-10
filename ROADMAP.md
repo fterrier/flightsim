@@ -58,10 +58,11 @@ crates/
   content      scenario.rs        what exists and what it looks like (a "level")
   simulation   simulation.rs      physics world + fixed steps + interpolation
                timestep.rs        the fixed-timestep clock
-  presentation render.rs          Renderer: proxies, camera, HUD, against
-                                  the RenderBackend interface
-               camera.rs          where to look (smooth follow)
-               view.rs, hud.rs    world-space framing, screen-space text
+  presentation render.rs          Renderer: proxies, debug drawing, HUD,
+                                  against the RenderBackend interface
+               camera.rs          the camera: where it looks (smooth
+                                  follow), zoom, what's visible
+               hud.rs             screen-space debug text, FPS
   backend      kiss3d_backend.rs  RenderBackend with kiss3d, 1 call/method (humble)
 ```
 

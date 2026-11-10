@@ -4,7 +4,7 @@
 //! It doesn't know what's in the world: that's the scenario's business.
 //! No logic lives here either, because this file can't be tested in CI (no
 //! display). The loop's logic is in tested modules: `simulation` (fixed
-//! steps and interpolation), `render` (camera, proxies, HUD), and the
+//! steps and interpolation), `render` (proxies, HUD), `camera`, and the
 //! `physics` crate itself.
 
 #[cfg(test)]
@@ -16,7 +16,6 @@ mod render;
 mod scenario;
 mod simulation;
 mod timestep;
-mod view;
 
 use std::thread;
 use std::time::{Duration, Instant};
@@ -75,6 +74,7 @@ async fn main() {
                     sim = Simulation::new(scenario.world(), PHYSICS_DT);
                 }
                 WindowEvent::Key(Key::C, Action::Press, _) => renderer.toggle_camera(),
+                WindowEvent::Scroll(_, scroll, _) => renderer.zoom_by(scroll),
                 _ => {}
             }
         }

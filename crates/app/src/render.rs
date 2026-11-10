@@ -19,11 +19,10 @@
 use glam::Vec2;
 use physics::DVec2;
 
-use crate::camera::FollowCamera;
+use crate::camera::Camera;
 use crate::hud::{self, FrameStats, Hud};
 use crate::scenario::Scenario;
 use crate::simulation::Simulation;
-use crate::view;
 
 /// A colour, in *linear* light (how much light, not how bright it looks).
 /// Backends convert to sRGB, what screens expect, which brightens dark
@@ -81,9 +80,9 @@ pub struct Screen {
 /// positions are in screen space (physical pixels, top-left, y down).
 pub trait RenderBackend {
     fn screen(&self) -> Screen;
-    /// Current camera zoom, physical pixels per metre (the mouse wheel may
-    /// have changed it).
-    fn zoom(&self) -> f32;
+    /// Where the camera looks (world space) and its zoom, in *physical*
+    /// pixels per metre. The backend only applies it: the camera's state
+    /// lives in our `Camera`.
     fn set_camera(&mut self, at: Vec2, zoom: f32);
 
     /// Retained objects: created once, then moved every frame.
@@ -99,6 +98,10 @@ pub trait RenderBackend {
 /// Width of the ground and ruler lines, in physical pixels.
 const LINE_WIDTH: f32 = 2.0;
 
+/// Ruler tick lengths, in metres (they're world-space objects).
+const MAJOR_TICK: f64 = 1.0;
+const MINOR_TICK: f64 = 0.4;
+
 /// Everything about presenting the simulation: render proxies, where the
 /// camera looks, and the debug HUD. The game loop only hands it the
 /// simulation once per frame.
@@ -110,9 +113,9 @@ pub struct Renderer {
     proxies: Vec<ProxyId>,
     /// Index of the object the camera and HUD follow.
     focus: usize,
-    /// Where to look: glides after the focused object.
+    /// Where to look and how far zoomed: glides after the focused object.
     // TODO(step-05): 3D chase and orbit cameras.
-    camera: FollowCamera,
+    camera: Camera,
     hud: Hud,
     stats: FrameStats,
 }
@@ -120,12 +123,13 @@ pub struct Renderer {
 impl Renderer {
     /// Creates the scenario's render proxies and frames the starting view.
     pub fn new(backend: &mut impl RenderBackend, scenario: &Scenario) -> Self {
-        let scale = backend.screen().scale;
-        backend.set_camera(Vec2::ZERO, view::initial_zoom(scale));
+        let screen = backend.screen();
         let focus = scenario.focus;
         let start = scenario.objects[focus].body.motion.position;
-        let mut camera = FollowCamera::new(start);
-        camera.snap_to(start, visible_half_height(backend));
+        let mut camera = Camera::new(start);
+        camera.snap_to(start, viewport(screen));
+        // The very first frame is shown before `draw_frame` runs.
+        backend.set_camera(to_render(camera.position), camera.zoom() * screen.scale);
         Self {
             proxies: scenario
                 .objects
@@ -144,6 +148,12 @@ impl Renderer {
         self.camera.toggle_mode();
     }
 
+    /// Zooms in (positive) or out (negative) by a scroll distance, in
+    /// pixels.
+    pub fn zoom_by(&mut self, scroll: f64) {
+        self.camera.zoom_by(scroll);
+    }
+
     /// Prepares one frame showing `sim`: camera, proxies, ruler, HUD.
     /// `steps` is how many physics steps ran this frame, `frame_time` how
     /// long the last frame took (real seconds).
@@ -155,19 +165,18 @@ impl Renderer {
         frame_time: f64,
     ) {
         self.stats.record(frame_time);
+        let screen = backend.screen();
+        let viewport = viewport(screen);
         // The camera glides towards where the focused object is drawn
         // (interpolated), in real frame time.
         let target = sim.drawn_position(self.focus);
-        self.camera
-            .update(target, frame_time, visible_half_height(backend));
+        self.camera.update(target, frame_time, viewport);
         self.hud
             .update(sim, self.focus, steps, &self.stats, self.camera.mode);
 
-        let screen = backend.screen();
-        // The mouse wheel may have zoomed the camera; keep it in range.
-        let zoom = view::clamp_zoom(backend.zoom(), screen.scale);
+        // The camera thinks in logical pixels; the backend in physical ones.
         let look_at = self.camera.position;
-        backend.set_camera(to_render(look_at), zoom);
+        backend.set_camera(to_render(look_at), self.camera.zoom() * screen.scale);
 
         // ═══════════════════════════════════════════════════════════════
         //  PHYSICS -> SCENE
@@ -182,11 +191,14 @@ impl Renderer {
             backend.set_position(*proxy, to_render(position));
         }
 
-        // Ground line and distance ruler, in world space.
-        let (from, to) = view::visible_x_range(look_at.x, screen.width, zoom);
+        // Ground line and distance ruler, in world space, across what the
+        // camera sees.
+        // TODO(step-04): replaced by a 3D ground grid.
+        let half_width = self.camera.visible_half_extents(viewport).x;
+        let (from, to) = (look_at.x - half_width, look_at.x + half_width);
         let ground = |x: f64, y: f64| to_render(DVec2::new(x, y));
         backend.line(ground(from, 0.0), ground(to, 0.0), GREY, LINE_WIDTH);
-        for tick in view::ruler_ticks(from, to) {
+        for tick in ruler_ticks(from, to) {
             let (top, bottom) = (ground(tick.x, 0.0), ground(tick.x, -tick.length));
             backend.line(top, bottom, GREY, LINE_WIDTH);
         }
@@ -199,11 +211,36 @@ impl Renderer {
     }
 }
 
-/// Metres visible above and below the camera centre, for framing.
-fn visible_half_height(backend: &impl RenderBackend) -> f64 {
-    let screen = backend.screen();
-    let zoom = view::clamp_zoom(backend.zoom(), screen.scale);
-    view::visible_half_height(screen.height, zoom)
+/// The screen's size in logical pixels (what the camera works with).
+fn viewport(screen: Screen) -> DVec2 {
+    DVec2::new(screen.width as f64, screen.height as f64) / screen.scale as f64
+}
+
+/// One mark of the distance ruler drawn along the ground (world space).
+#[derive(Debug)]
+struct Tick {
+    /// Position along the ground, in metres.
+    x: f64,
+    /// How far the mark extends below the ground, in metres.
+    length: f64,
+}
+
+/// One tick per whole metre between `from` and `to` (metres), longer
+/// every 10 m. Only the visible part of the ruler is generated.
+///
+/// Returns an *iterator*: ticks are produced one by one as they're drawn,
+/// never stored, so no memory is allocated per frame (a `Vec` would be
+/// allocated and freed every frame).
+fn ruler_ticks(from: f64, to: f64) -> impl Iterator<Item = Tick> {
+    (from.ceil() as i64..=to.floor() as i64).map(|m| Tick {
+        x: m as f64,
+        // rem_euclid, not %: -10 % 10 is 0 but -3 % 10 is -3 in Rust.
+        length: if m.rem_euclid(10) == 0 {
+            MAJOR_TICK
+        } else {
+            MINOR_TICK
+        },
+    })
 }
 
 /// Physics position (f64 metres) -> render position (f32 metres, what
@@ -226,7 +263,7 @@ pub mod fakes {
     /// Records every call, so tests can check what was drawn.
     pub struct RecordingBackend {
         pub screen: Screen,
-        /// Camera zoom (physical px per metre), as the mouse wheel left it.
+        /// Latest camera zoom, physical px per metre.
         pub zoom: f32,
         pub camera_at: Option<Vec2>,
         /// Created proxies: their visual and latest position.
@@ -252,9 +289,6 @@ pub mod fakes {
     impl RenderBackend for RecordingBackend {
         fn screen(&self) -> Screen {
             self.screen
-        }
-        fn zoom(&self) -> f32 {
-            self.zoom
         }
         fn set_camera(&mut self, at: Vec2, zoom: f32) {
             self.camera_at = Some(at);
@@ -283,9 +317,6 @@ pub mod fakes {
         fn screen(&self) -> Screen {
             self.0
         }
-        fn zoom(&self) -> f32 {
-            20.0
-        }
         fn set_camera(&mut self, _at: Vec2, _zoom: f32) {}
         fn create_proxy(&mut self, _visual: &Visual) -> ProxyId {
             ProxyId(0)
@@ -300,6 +331,7 @@ pub mod fakes {
 mod tests {
     use super::fakes::RecordingBackend;
     use super::*;
+    use crate::camera;
     use crate::scenario::SceneObject;
     use physics::{Body, Circle, Motion};
 
@@ -358,7 +390,7 @@ mod tests {
         setup(&resting_at(0.0), &mut backend);
         assert_eq!(backend.proxies.len(), 1);
         assert_eq!(backend.proxies[0].0, BALL);
-        assert_eq!(backend.zoom, view::initial_zoom(1.0));
+        assert_eq!(backend.zoom, camera::DEFAULT_ZOOM);
     }
 
     #[test]
@@ -421,29 +453,67 @@ mod tests {
     }
 
     #[test]
-    fn zoom_from_the_mouse_wheel_is_kept_within_limits() {
+    fn mouse_wheel_zooms_the_camera() {
         let mut backend = RecordingBackend::new(SCREEN);
         let (sim, mut renderer) = setup(&resting_at(0.0), &mut backend);
-        backend.zoom = 10_000.0; // scrolled far in
+        renderer.zoom_by(1e6); // scrolled far in: the camera clamps it
         renderer.draw_frame(&mut backend, &sim, 0, FRAME);
-        assert_eq!(backend.zoom, view::clamp_zoom(10_000.0, 1.0));
-        assert!(backend.zoom < 10_000.0);
+        assert_eq!(backend.zoom, camera::MAX_ZOOM);
+    }
+
+    #[test]
+    fn zoom_is_sent_in_physical_pixels() {
+        // The camera thinks in logical pixels; the backend gets physical
+        // ones: twice as many per metre on a Retina display.
+        let retina = Screen {
+            width: 2000.0,
+            height: 1200.0,
+            scale: 2.0,
+        };
+        let mut backend = RecordingBackend::new(retina);
+        let (sim, mut renderer) = setup(&resting_at(0.0), &mut backend);
+        renderer.draw_frame(&mut backend, &sim, 0, FRAME);
+        assert_eq!(backend.zoom, 2.0 * camera::DEFAULT_ZOOM);
     }
 
     #[test]
     fn ground_line_and_ruler_span_the_visible_range() {
-        let mut backend = RecordingBackend::new(SCREEN);
+        // 1500 px wide at 15 px/m = 100 m across, centred on x = 100 m.
+        let wide = Screen {
+            width: 1500.0,
+            height: 600.0,
+            scale: 1.0,
+        };
+        let mut backend = RecordingBackend::new(wide);
         let (sim, mut renderer) = setup(&resting_at(100.0), &mut backend);
-        backend.zoom = 20.0; // 1000 px / 20 px/m = 50 m across
         renderer.draw_frame(&mut backend, &sim, 0, FRAME);
         // The ground: one line across the visible range, at y = 0.
         assert_eq!(
             backend.lines[0],
-            (Vec2::new(75.0, 0.0), Vec2::new(125.0, 0.0))
+            (Vec2::new(50.0, 0.0), Vec2::new(150.0, 0.0))
         );
-        // Then one tick per whole metre from 75 to 125 m.
-        assert_eq!(backend.lines.len(), 1 + 51);
-        assert_eq!(backend.lines[1].0, Vec2::new(75.0, 0.0));
+        // Then one tick per whole metre from 50 to 150 m.
+        assert_eq!(backend.lines.len(), 1 + 101);
+        assert_eq!(backend.lines[1].0, Vec2::new(50.0, 0.0));
+    }
+
+    #[test]
+    fn ruler_has_a_tick_on_every_whole_metre_in_range() {
+        let xs: Vec<f64> = ruler_ticks(0.5, 3.2).map(|t| t.x).collect();
+        assert_eq!(xs, [1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn every_tenth_tick_is_longer_including_negative_ones() {
+        let ticks: Vec<Tick> = ruler_ticks(-10.0, 10.0).collect();
+        assert_eq!(ticks.len(), 21);
+        let long: Vec<f64> = ticks
+            .iter()
+            .filter(|t| t.length == MAJOR_TICK)
+            .map(|t| t.x)
+            .collect();
+        assert_eq!(long, [-10.0, 0.0, 10.0]);
+        const { assert!(MINOR_TICK < MAJOR_TICK) } // checked at compile time
     }
 
     #[test]
