@@ -69,11 +69,20 @@ Bug fixes start with a test that reproduces the bug.
 
 Enforced in CI with [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov).
 
-The only excluded file is `crates/app/src/main.rs`: it is the thin shell
-that opens the window, reads the real keyboard and draws. It can't run in
-CI (no display), so it must contain **no logic**: anything worth testing
-(timing, input mapping, coordinate conversions) goes into a tested module
-and `main.rs` just calls it.
+Two files are excluded, because they need a real window and GPU, which
+CI doesn't have:
+
+- `crates/app/src/main.rs`: the platform shell (window, keyboard, clock,
+  game loop).
+- `crates/app/src/kiss3d_backend.rs`: the `RenderBackend` implemented with
+  kiss3d, one kiss3d call per method.
+
+Both are "humble objects" (Meszaros, *xUnit Test Patterns*): they must
+contain **no logic**. Anything that decides something (timing, input
+mapping, coordinate conversions, what to draw where) goes into a tested
+module. Rendering decisions live in `render.rs` and are tested against
+`RecordingBackend` / `NullBackend`, fakes of the backend interface (the
+idea behind Unreal's "null RHI").
 
 Don't game coverage: a test that executes code without asserting anything
 meaningful doesn't count.
@@ -86,7 +95,7 @@ All four must pass (CI runs the same):
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-cargo llvm-cov --workspace --fail-under-lines 95 --ignore-filename-regex 'crates/app/src/main\.rs'
+cargo llvm-cov --workspace --fail-under-lines 95 --ignore-filename-regex 'crates/app/src/(main|kiss3d_backend)\.rs'
 ```
 
 Also run the app (`cargo run -p app`) when the step changes what's on

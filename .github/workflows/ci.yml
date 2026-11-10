@@ -23,8 +23,9 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 
-  # Line coverage must stay >= 95% (see AGENTS.md). main.rs is the untestable
-  # window/drawing shell and must contain no logic, so it is excluded.
+  # Line coverage must stay >= 95% (see AGENTS.md). main.rs and
+  # kiss3d_backend.rs need a window and GPU; they must contain no logic
+  # ("humble objects"), so they are excluded.
   coverage:
     runs-on: ubuntu-latest
     steps:
@@ -32,4 +33,4 @@ jobs:
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-llvm-cov
-      - run: cargo llvm-cov --workspace --fail-under-lines 95 --ignore-filename-regex 'crates/app/src/main\.rs'
+      - run: cargo llvm-cov --workspace --fail-under-lines 95 --ignore-filename-regex 'crates/app/src/(main|kiss3d_backend)\.rs'

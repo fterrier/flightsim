@@ -52,8 +52,9 @@ mod tests {
     use super::*;
     use crate::camera::{CameraMode, FollowCamera};
     use crate::hud::{FrameStats, Hud};
+    use crate::render::fakes::NullBackend;
+    use crate::render::{Renderer, Screen, Shape, Visual, WHITE};
     use crate::simulation::Simulation;
-    use crate::view;
     use physics::{Body, Circle, DVec2, World};
 
     #[test]
@@ -75,17 +76,29 @@ mod tests {
         let mut camera = FollowCamera::new(DVec2::ZERO);
         let mut stats = FrameStats::default();
         let mut hud = Hud::default();
+        // The renderer runs for real, against a backend that draws nothing.
+        let mut backend = NullBackend(Screen {
+            width: 2560.0,
+            height: 1440.0,
+            scale: 2.0,
+        });
+        let visual = Visual {
+            shape: Shape::Circle { radius: 0.4 },
+            color: WHITE,
+        };
+        let renderer = Renderer::new(&mut backend, &visual);
 
-        // Everything the game loop does per frame, except the kiss3d calls.
+        // Everything the game loop does per frame; only kiss3d itself is
+        // replaced (by `NullBackend`).
         let mut frame = || {
             let frame_time = 1.0 / 60.0;
             stats.record(frame_time);
             let steps = sim.advance(frame_time);
             let drawn = sim.drawn();
-            camera.update(drawn.ball, frame_time, 20.0);
-            let ticks = view::ruler_ticks(drawn.ball.x - 40.0, drawn.ball.x + 40.0);
-            std::hint::black_box(ticks.count());
+            let half_height = renderer.visible_half_height(&backend);
+            camera.update(drawn.ball, frame_time, half_height);
             hud.update(&sim, steps, &stats, CameraMode::Follow);
+            renderer.draw_frame(&mut backend, &drawn, camera.position, &hud);
         };
 
         // 10 simulated minutes of frames: numbers on the HUD grow longer,

@@ -45,8 +45,10 @@ The full plan, step by step, is in [ROADMAP.md](ROADMAP.md).
 ```
 crates/
   physics/   library: simulation state + update functions (pure, no graphics)
-  app/       binary `flightsim`: window, input, game loop, drawing
+  app/       binary `flightsim`: game loop, camera, rendering, HUD
 ```
+
+See [ROADMAP.md](ROADMAP.md) "Architecture" for the layers inside `app`.
 
 ## Run
 
@@ -100,7 +102,7 @@ Each step that adds controls updates this table.
 cargo test --workspace                                 # run all tests
 cargo fmt --all                                        # format code
 cargo clippy --workspace --all-targets -- -D warnings  # lint
-cargo llvm-cov --workspace --ignore-filename-regex 'crates/app/src/main\.rs'  # coverage
+cargo llvm-cov --workspace --ignore-filename-regex 'crates/app/src/(main|kiss3d_backend)\.rs'  # coverage
 ```
 
 Coverage needs `cargo install cargo-llvm-cov` once.

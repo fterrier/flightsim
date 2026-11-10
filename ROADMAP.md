@@ -16,7 +16,7 @@ git checkout step-01            # the code as it was after step 1
 | ✅ | **1. Window + game loop** | A dot moving at constant speed, followed by the camera; FPS and sim-time overlay; keys to simulate slow frames | Fixed-timestep accumulator, update vs render, spiral of death, world vs screen space, camera, retained scene + render proxies |
 | ✅ | **2. Falling ball** | A ball drops and stops on the ground | Numerical integration (semi-implicit Euler), testing against an analytic solution |
 | ✅ | **3. Smooth 2D camera** | Motion stays smooth at any display rate; the camera glides after the ball, follows it vertically, zoom is limited; a key switches follow / fixed camera | Interpolation between physics states, frame-rate-independent smoothing, dead zones, camera as a tested module |
-| ⬜ | **4. Ball in 3D** | A ball thrown in any direction over a ground grid, lit in 3D | `DVec3`, axis conventions: NED physics vs y-up graphics, converted in `sync_scene` (see decision below) |
+| ⬜ | **4. Ball in 3D** | A ball thrown in any direction over a ground grid, lit in 3D | `DVec3`, axis conventions: NED physics vs y-up graphics, converted in one place in the renderer (see decision below) |
 | ⬜ | **5. 3D cameras** | Chase camera (smoothed, behind the target) and orbit camera (mouse), switched with a key | 3D camera maths: look-at, spherical coordinates, smoothing in 3D |
 | ⬜ | **6. Point-mass plane** | Throttle and pitch keys; the plane rolls, lifts off, climbs, stalls (moving in the vertical plane) | Mass, lift, drag, thrust, weight, air density, angle of attack |
 | ⬜ | **7. Plane that pitches** | Pitch is now a dynamic state driven by the elevator; the plane settles at its own trim attitude | Moments, moment of inertia, static stability (the tail), trim |
@@ -51,7 +51,15 @@ rotation maths (quaternions) to step 8.
 ```
 crates/
   physics/   pure simulation: state structs + functions that update them
-  app/       window, input, game loop (owns the clock), drawing
+  app/       everything else, in layers:
+
+  platform     main.rs            window, keyboard, clock, the game loop   (humble)
+  simulation   simulation.rs      physics world + fixed steps + interpolation
+               timestep.rs        the fixed-timestep clock
+  presentation camera.rs          where to look (smooth follow)
+               render.rs          how to draw: Renderer, against RenderBackend
+               view.rs, hud.rs    world-space framing, screen-space text
+  backend      kiss3d_backend.rs  RenderBackend with kiss3d, 1 call/method (humble)
 ```
 
 Rules:
@@ -60,14 +68,18 @@ Rules:
    It exposes plain data and functions like `step(&mut state, &controls, dt)`.
 2. **The app owns the loop.** It reads the clock, polls input, calls physics
    a whole number of fixed steps, then draws.
-3. **Rendering only reads** simulation state, never writes it. The
-   game loop's logic (fixed steps, interpolation, camera, HUD) lives in
-   tested modules; `main.rs` is a thin shell around them.
+3. **Rendering only reads** simulation state, never writes it. All logic
+   lives in tested modules; `main.rs` and `kiss3d_backend.rs` are humble
+   shells around them (see AGENTS.md "Coverage").
 4. **New crates only when a boundary hurts.** Likely future splits:
    `aircraft` (data loading), `collision`.
 5. **Physics → scene in one place.** Graphics keep *render proxies*
-   (scene nodes) for simulated objects; once per frame, a single sync
-   function copies physics state into them (`sync_scene` in `main.rs`).
+   (scene nodes) for simulated objects; once per frame, one place copies
+   the (interpolated) physics state into them: `Renderer::draw_frame`, in
+   `render.rs`.
+6. **Content is data.** What an object looks like is a `Visual` (shape +
+   colour, later a glTF mesh + material). The render interface has a few
+   generic operations and never grows with content: no `draw_plane`.
 
 ## Decisions
 
@@ -111,13 +123,32 @@ Escape hatch if we ever need city-scale scenery: Bevy or Godot; the
 Risk: pre-1.0, breaking releases every few months. The version is pinned;
 upgrades are deliberate.
 
+### Rendering: a generic backend interface, tested renderer, humble adapter
+
+All rendering decisions (where proxies go, f64 → f32, zoom limits, ruler
+and HUD layout, later the NED → y-up conversion) live in `Renderer`,
+written against `RenderBackend`: a few generic operations (create a
+proxy from a `Visual`, move it, set the camera, debug lines, text). The
+kiss3d implementation is a "humble object", one kiss3d call per method.
+
+This follows established practice: engines put the graphics API behind
+an interface with generic operations (Unreal's RHI and scene proxies,
+Godot's `RenderingServer` with instance handles, Bevy's render world),
+and test logic against fakes of it (Unreal runs automation tests with a
+"null RHI"; Meszaros' *Humble Object* pattern). Tests use a recording
+fake and a null one; the null one also proves a frame allocates nothing.
+Pixel-level snapshot tests of the real backend (as wgpu, Bevy and
+egui_kittest do, with software GPUs on CI) can come later, once there is
+3D content worth protecting.
+
 ### Axes: NED in physics, y-up in graphics (from step 4)
 
 Flight-dynamics literature (Stevens & Lewis, Beard & McLain) uses
 **NED**: x north, y east, z *down* (and body axes x forward, y right,
 z down). Graphics libraries, kiss3d included, use **y up**. Physics keeps
 NED so its equations match the books; the conversion happens in exactly
-one place, `sync_scene` (Architecture rule 5), as in real simulators.
+one place, the renderer's physics → render conversion (Architecture rule
+5), as in real simulators.
 Until step 4 the 2D world uses x right, y up.
 
 ### Flight model: coefficient-based first
