@@ -16,8 +16,8 @@
 //!   Tests run it against a fake backend that records calls (the idea
 //!   behind Unreal's "null RHI").
 
-use glam::Vec2;
-use physics::DVec2;
+use glam::{Vec2, Vec3};
+use physics::{DVec2, DVec3};
 
 use crate::camera::Camera;
 use crate::scene::Scene;
@@ -42,14 +42,14 @@ impl Color {
 }
 
 const GREY: Color = Color::rgb(0.5, 0.5, 0.5);
+const DARK_GREY: Color = Color::rgb(0.08, 0.08, 0.08);
 pub(crate) const WHITE: Color = Color::rgb(1.0, 1.0, 1.0);
 
 /// The geometry of a [`Visual`], in metres.
-// TODO(step-04): add `Sphere`, and boxes for a ground grid.
 // TODO(later): `Mesh(asset)` for our own 3D models (glTF from Blender).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Shape {
-    Circle { radius: f32 },
+    Sphere { radius: f32 },
 }
 
 /// What an object looks like: data, not code. Engines call this a mesh +
@@ -75,34 +75,44 @@ pub struct Screen {
 }
 
 /// The few generic operations rendering needs from a graphics library.
-/// World positions are f32 metres (GPUs work in f32).
+/// World positions and directions are f32 metres (GPUs work in f32), in
+/// **render axes**: x east, y up, z south (the y-up convention of graphics
+/// libraries); `to_render` converts from the physics' NED.
 pub trait RenderBackend {
     fn screen(&self) -> Screen;
     fn set_background(&mut self, color: Color);
-    /// Where the camera looks (world space) and its zoom, in *physical*
-    /// pixels per metre. The backend only applies it: the camera's state
-    /// lives in our `Camera`.
-    fn set_camera(&mut self, at: Vec2, zoom: f32);
+    /// A directional light, like the sun, shining along `direction`.
+    fn set_sun(&mut self, direction: Vec3);
+    /// The camera: at `eye`, looking at `target`.
+    fn set_camera(&mut self, eye: Vec3, target: Vec3);
 
     /// Retained objects: created once, then moved every frame.
     fn create_proxy(&mut self, visual: &Visual) -> ProxyId;
-    fn set_position(&mut self, proxy: ProxyId, position: Vec2);
+    fn set_position(&mut self, proxy: ProxyId, position: Vec3);
 
     /// Immediate drawing, re-issued every frame. Two coordinate spaces, as
     /// in Unreal (`DrawDebugLine` in the world, `UCanvas::DrawText` on the
     /// screen), named so every call says which one it uses:
     /// a debug line in **world** space (metres), `width` in pixels...
-    fn world_line(&mut self, from: Vec2, to: Vec2, color: Color, width: f32);
+    fn world_line(&mut self, from: Vec3, to: Vec3, color: Color, width: f32);
     /// ...and text in **screen** space (physical pixels, top-left, y down).
     fn screen_text(&mut self, text: &str, at: Vec2, size: f32, color: Color);
 }
 
-/// Width of the ground and ruler lines, in physical pixels.
-const LINE_WIDTH: f32 = 2.0;
+/// The direction sunlight travels (NED): from the south-east, high in the
+/// sky, so it goes north-west and down.
+const SUN_DIRECTION: DVec3 = DVec3::new(0.4, -0.3, 0.85);
 
-/// Ruler tick lengths, in metres (they're world-space objects).
-const MAJOR_TICK: f64 = 1.0;
-const MINOR_TICK: f64 = 0.4;
+/// Ground grid: a line every `GRID_SPACING` metres, a brighter one every
+/// `GRID_MAJOR_EVERY` lines, over `GRID_HALF_SIZE` metres around what the
+/// camera looks at.
+const GRID_SPACING: f64 = 2.0;
+const GRID_MAJOR_EVERY: i64 = 5;
+const GRID_HALF_SIZE: f64 = 50.0;
+
+/// Width of the grid lines, in physical pixels.
+const MAJOR_LINE_WIDTH: f32 = 2.0;
+const MINOR_LINE_WIDTH: f32 = 1.0;
 
 /// Draws the world: one render proxy per scene object, moved every frame
 /// to where the simulation says, plus world-space debug drawing, all as
@@ -117,9 +127,10 @@ pub(crate) struct Renderer {
 }
 
 impl Renderer {
-    /// Creates the scene's render proxies and sets its background.
+    /// Creates the scene's render proxies, its background and its light.
     pub(crate) fn new(backend: &mut impl RenderBackend, scene: &Scene) -> Self {
         backend.set_background(scene.background);
+        backend.set_sun(to_render(SUN_DIRECTION.normalize()));
         Self {
             proxies: scene
                 .objects
@@ -129,12 +140,9 @@ impl Renderer {
         }
     }
 
-    /// Prepares the world for this frame: camera, proxies, debug drawing.
+    /// Prepares the world for this frame: camera, proxies, ground grid.
     pub(crate) fn draw(&self, backend: &mut impl RenderBackend, sim: &Simulation, camera: &Camera) {
-        let screen = backend.screen();
-        // The camera thinks in logical pixels; the backend in physical ones.
-        let look_at = camera.position;
-        backend.set_camera(to_render(look_at), camera.zoom() * screen.scale);
+        backend.set_camera(to_render(camera.eye()), to_render(camera.target));
 
         // ═══════════════════════════════════════════════════════════════
         //  PHYSICS -> SCENE
@@ -142,69 +150,80 @@ impl Renderer {
         //  The only place where simulation state flows into graphics.
         //  Physics never knows the scene exists; once per frame the drawn
         //  (interpolated) positions are copied into the render proxies,
-        //  in one loop over all objects. In 3D it stays the same:
-        //  position + orientation -> scene node.
+        //  in one loop over all objects.
+        //  TODO(step-08): orientations too (position + rotation).
         // ═══════════════════════════════════════════════════════════════
         for (proxy, position) in self.proxies.iter().zip(sim.drawn_positions()) {
             backend.set_position(*proxy, to_render(position));
         }
 
-        // Ground line and distance ruler, in world space, across what the
-        // camera sees.
-        // TODO(step-04): replaced by a 3D ground grid.
-        let half_width = camera.visible_half_extents(viewport(screen)).x;
-        let (from, to) = (look_at.x - half_width, look_at.x + half_width);
-        let ground = |x: f64, y: f64| to_render(DVec2::new(x, y));
-        backend.world_line(ground(from, 0.0), ground(to, 0.0), GREY, LINE_WIDTH);
-        for tick in ruler_ticks(from, to) {
-            let (top, bottom) = (ground(tick.x, 0.0), ground(tick.x, -tick.length));
-            backend.world_line(top, bottom, GREY, LINE_WIDTH);
+        for line in grid_lines(camera.target.truncate()) {
+            let (color, width) = if line.major {
+                (GREY, MAJOR_LINE_WIDTH)
+            } else {
+                (DARK_GREY, MINOR_LINE_WIDTH)
+            };
+            backend.world_line(to_render(line.from), to_render(line.to), color, width);
         }
     }
 }
 
-/// The screen's size in logical pixels (what the camera works with).
-pub(crate) fn viewport(screen: Screen) -> DVec2 {
-    DVec2::new(screen.width as f64, screen.height as f64) / screen.scale as f64
-}
-
-/// One mark of the distance ruler drawn along the ground (world space).
+/// One line of the ground grid (NED, on the ground: z = 0).
 #[derive(Debug)]
-struct Tick {
-    /// Position along the ground, in metres.
-    x: f64,
-    /// How far the mark extends below the ground, in metres.
-    length: f64,
+struct GridLine {
+    from: DVec3,
+    to: DVec3,
+    major: bool,
 }
 
-/// One tick per whole metre between `from` and `to` (metres), longer
-/// every 10 m. Only the visible part of the ruler is generated.
+/// The ground grid around `centre` (north, east, in metres): lines running
+/// east-west and north-south.
 ///
-/// Returns an *iterator*: ticks are produced one by one as they're drawn,
-/// never stored, so no memory is allocated per frame (a `Vec` would be
-/// allocated and freed every frame).
-fn ruler_ticks(from: f64, to: f64) -> impl Iterator<Item = Tick> {
-    (from.ceil() as i64..=to.floor() as i64).map(|m| Tick {
-        x: m as f64,
-        // rem_euclid, not %: -10 % 10 is 0 but -3 % 10 is -3 in Rust.
-        length: if m.rem_euclid(10) == 0 {
-            MAJOR_TICK
-        } else {
-            MINOR_TICK
-        },
+/// The grid's centre is snapped to whole major cells, so as the camera
+/// moves the lines stay put on the ground instead of sliding along with
+/// it. Returns an *iterator*: lines are produced as they're drawn, never
+/// stored, so no memory is allocated per frame.
+fn grid_lines(centre: DVec2) -> impl Iterator<Item = GridLine> {
+    let cell = GRID_SPACING * GRID_MAJOR_EVERY as f64;
+    let snapped = (centre / cell).round() * cell;
+    let lines_each_side = (GRID_HALF_SIZE / GRID_SPACING) as i64;
+    (-lines_each_side..=lines_each_side).flat_map(move |i| {
+        let offset = i as f64 * GRID_SPACING;
+        // rem_euclid, not %: -10 % 5 is 0 but -3 % 5 is -3 in Rust.
+        let major = i.rem_euclid(GRID_MAJOR_EVERY) == 0;
+        let (north, east) = (snapped.x + offset, snapped.y + offset);
+        let (south_edge, north_edge) = (snapped.x - GRID_HALF_SIZE, snapped.x + GRID_HALF_SIZE);
+        let (west_edge, east_edge) = (snapped.y - GRID_HALF_SIZE, snapped.y + GRID_HALF_SIZE);
+        [
+            // Running east-west, at a fixed `north`.
+            GridLine {
+                from: DVec3::new(north, west_edge, 0.0),
+                to: DVec3::new(north, east_edge, 0.0),
+                major,
+            },
+            // Running north-south, at a fixed `east`.
+            GridLine {
+                from: DVec3::new(south_edge, east, 0.0),
+                to: DVec3::new(north_edge, east, 0.0),
+                major,
+            },
+        ]
     })
 }
 
-/// Physics position (f64 metres) -> render position (f32 metres, what
-/// GPUs use).
-// TODO(step-04): physics moves to 3D NED axes (z down); convert to the
-// renderer's y-up axes here, and only here.
+/// Physics position or direction (NED, f64 metres) -> render axes (f32,
+/// what GPUs use): x east, y up, z south. This is the *only* place the two
+/// axis conventions meet (see ROADMAP "Axes").
+///
+/// Both are right-handed, so the mapping is a pure rotation: lengths,
+/// angles and cross products are preserved (checked by the tests).
 // TODO(later): f32 only has ~7 significant digits: at 100 km from the
 // origin, positions snap to ~1 cm steps and the picture jitters. The usual
 // fix is a "floating origin": subtract the camera position in f64 *before*
 // converting, so the GPU only sees small numbers.
-fn to_render(position: DVec2) -> Vec2 {
-    position.as_vec2()
+fn to_render(ned: DVec3) -> Vec3 {
+    let (north, east, down) = (ned.x, ned.y, ned.z);
+    Vec3::new(east as f32, -down as f32, -north as f32)
 }
 
 /// Test doubles for `RenderBackend`, shared by tests in several modules.
@@ -214,16 +233,16 @@ pub(crate) mod fakes {
 
     /// Records every call, so tests can check what was drawn.
     pub(crate) struct RecordingBackend {
-        pub screen: Screen,
-        pub background: Option<Color>,
-        /// Latest camera zoom, physical px per metre.
-        pub zoom: f32,
-        pub camera_at: Option<Vec2>,
+        pub(crate) screen: Screen,
+        pub(crate) background: Option<Color>,
+        pub(crate) sun: Option<Vec3>,
+        /// Latest camera: eye and target.
+        pub(crate) camera: Option<(Vec3, Vec3)>,
         /// Created proxies: their visual and latest position.
-        pub proxies: Vec<(Visual, Option<Vec2>)>,
-        pub lines: Vec<(Vec2, Vec2)>,
+        pub(crate) proxies: Vec<(Visual, Option<Vec3>)>,
+        pub(crate) lines: Vec<(Vec3, Vec3)>,
         /// Text, position, size.
-        pub texts: Vec<(String, Vec2, f32)>,
+        pub(crate) texts: Vec<(String, Vec2, f32)>,
     }
 
     impl RecordingBackend {
@@ -231,8 +250,8 @@ pub(crate) mod fakes {
             Self {
                 screen,
                 background: None,
-                zoom: 1.0,
-                camera_at: None,
+                sun: None,
+                camera: None,
                 proxies: Vec::new(),
                 lines: Vec::new(),
                 texts: Vec::new(),
@@ -247,18 +266,20 @@ pub(crate) mod fakes {
         fn set_background(&mut self, color: Color) {
             self.background = Some(color);
         }
-        fn set_camera(&mut self, at: Vec2, zoom: f32) {
-            self.camera_at = Some(at);
-            self.zoom = zoom;
+        fn set_sun(&mut self, direction: Vec3) {
+            self.sun = Some(direction);
+        }
+        fn set_camera(&mut self, eye: Vec3, target: Vec3) {
+            self.camera = Some((eye, target));
         }
         fn create_proxy(&mut self, visual: &Visual) -> ProxyId {
             self.proxies.push((*visual, None));
             ProxyId(self.proxies.len() - 1)
         }
-        fn set_position(&mut self, proxy: ProxyId, position: Vec2) {
+        fn set_position(&mut self, proxy: ProxyId, position: Vec3) {
             self.proxies[proxy.0].1 = Some(position);
         }
-        fn world_line(&mut self, from: Vec2, to: Vec2, _color: Color, _width: f32) {
+        fn world_line(&mut self, from: Vec3, to: Vec3, _color: Color, _width: f32) {
             self.lines.push((from, to));
         }
         fn screen_text(&mut self, text: &str, at: Vec2, size: f32, _color: Color) {
@@ -268,19 +289,20 @@ pub(crate) mod fakes {
 
     /// Ignores everything, like Unreal's "null RHI": lets the renderer's
     /// logic run without any graphics, e.g. to measure its allocations.
-    pub(crate) struct NullBackend(pub Screen);
+    pub(crate) struct NullBackend(pub(crate) Screen);
 
     impl RenderBackend for NullBackend {
         fn screen(&self) -> Screen {
             self.0
         }
         fn set_background(&mut self, _color: Color) {}
-        fn set_camera(&mut self, _at: Vec2, _zoom: f32) {}
+        fn set_sun(&mut self, _direction: Vec3) {}
+        fn set_camera(&mut self, _eye: Vec3, _target: Vec3) {}
         fn create_proxy(&mut self, _visual: &Visual) -> ProxyId {
             ProxyId(0)
         }
-        fn set_position(&mut self, _proxy: ProxyId, _position: Vec2) {}
-        fn world_line(&mut self, _from: Vec2, _to: Vec2, _color: Color, _width: f32) {}
+        fn set_position(&mut self, _proxy: ProxyId, _position: Vec3) {}
+        fn world_line(&mut self, _from: Vec3, _to: Vec3, _color: Color, _width: f32) {}
         fn screen_text(&mut self, _text: &str, _at: Vec2, _size: f32, _color: Color) {}
     }
 }
@@ -289,41 +311,39 @@ pub(crate) mod fakes {
 mod tests {
     use super::fakes::RecordingBackend;
     use super::*;
-    use crate::camera;
     use crate::scene::SceneObject;
-    use physics::{Body, Circle, Motion, STANDARD_GRAVITY};
+    use physics::{Body, Motion, STANDARD_GRAVITY, Sphere};
 
     const BALL: Visual = Visual {
-        shape: Shape::Circle { radius: 0.4 },
+        shape: Shape::Sphere { radius: 0.4 },
         color: WHITE,
     };
     const BACKGROUND: Color = Color::rgb(0.1, 0.2, 0.3);
 
-    /// A 1000 x 600 px standard-density screen.
     const SCREEN: Screen = Screen {
         width: 1000.0,
         height: 600.0,
         scale: 1.0,
     };
 
-    /// A ball resting on the ground at `x` metres: it doesn't move, so
+    /// A ball resting on the ground at (north, east): it doesn't move, so
     /// drawn positions are exact.
-    fn ball_at(x: f64) -> SceneObject {
+    fn ball_at(north: f64, east: f64) -> SceneObject {
         SceneObject {
             body: Body {
                 motion: Motion {
-                    position: DVec2::new(x, 0.4),
-                    velocity: DVec2::ZERO,
+                    position: DVec3::new(north, east, -0.4),
+                    velocity: DVec3::ZERO,
                 },
-                collider: Circle { radius: 0.4 },
+                collider: Sphere { radius: 0.4 },
             },
             visual: BALL,
         }
     }
 
-    fn balls_at(xs: &[f64]) -> Scene {
+    fn scene(objects: Vec<SceneObject>) -> Scene {
         Scene {
-            objects: xs.iter().map(|&x| ball_at(x)).collect(),
+            objects,
             focus: 0,
             background: BACKGROUND,
             gravity: STANDARD_GRAVITY,
@@ -331,32 +351,62 @@ mod tests {
     }
 
     /// The scene's simulation, a renderer for it on `backend`, and a camera
-    /// looking at `look_at`.
+    /// looking at `target`.
     fn setup(
         scene: &Scene,
         backend: &mut RecordingBackend,
-        look_at: DVec2,
+        target: DVec3,
     ) -> (Simulation, Renderer, Camera) {
         let sim = Simulation::new(scene.world(), 1.0 / 64.0);
-        (sim, Renderer::new(backend, scene), Camera::new(look_at))
+        (sim, Renderer::new(backend, scene), Camera::new(target))
     }
 
     #[test]
-    fn creates_one_proxy_per_object_and_sets_the_background() {
+    fn ned_axes_map_to_render_axes() {
+        assert_eq!(to_render(DVec3::X), Vec3::new(0.0, 0.0, -1.0)); // north: -z
+        assert_eq!(to_render(DVec3::Y), Vec3::new(1.0, 0.0, 0.0)); // east: +x
+        assert_eq!(to_render(DVec3::Z), Vec3::new(0.0, -1.0, 0.0)); // down: -y
+    }
+
+    #[test]
+    fn the_conversion_keeps_handedness() {
+        // A rotation, not a mirror: cross products survive the conversion,
+        // so a body turning right in physics turns right on screen.
+        let (n, e) = (DVec3::X, DVec3::Y);
+        assert_eq!(to_render(n.cross(e)), to_render(n).cross(to_render(e)));
+    }
+
+    #[test]
+    fn creates_one_proxy_per_object_with_background_and_sun() {
         let mut backend = RecordingBackend::new(SCREEN);
-        setup(&balls_at(&[1.0, 2.0]), &mut backend, DVec2::ZERO);
+        setup(
+            &scene(vec![ball_at(1.0, 0.0), ball_at(2.0, 0.0)]),
+            &mut backend,
+            DVec3::ZERO,
+        );
         assert_eq!(backend.proxies.len(), 2);
         assert_eq!(backend.proxies[0].0, BALL);
         assert_eq!(backend.background, Some(BACKGROUND));
+        let sun = backend.sun.expect("a sun is set");
+        assert!(sun.y < 0.0, "sunlight goes down: {sun}");
+        assert!((sun.length() - 1.0).abs() < 1e-6);
     }
 
     #[test]
     fn each_proxy_is_placed_where_the_simulation_says() {
         let mut backend = RecordingBackend::new(SCREEN);
-        let (sim, renderer, camera) = setup(&balls_at(&[1.0, 2.0, 3.0]), &mut backend, DVec2::ZERO);
+        let objects = vec![ball_at(1.0, 2.0), ball_at(-3.0, 4.0)];
+        let (sim, renderer, camera) = setup(&scene(objects), &mut backend, DVec3::ZERO);
         renderer.draw(&mut backend, &sim, &camera);
+        // NED (north, east, -0.4) -> render (east, 0.4, -north).
         let positions: Vec<_> = backend.proxies.iter().map(|(_, p)| *p).collect();
-        assert_eq!(positions, [1.0, 2.0, 3.0].map(|x| Some(Vec2::new(x, 0.4))));
+        assert_eq!(
+            positions,
+            [
+                Some(Vec3::new(2.0, 0.4, -1.0)),
+                Some(Vec3::new(4.0, 0.4, 3.0))
+            ]
+        );
     }
 
     #[test]
@@ -364,7 +414,8 @@ mod tests {
         // Retained mode: the proxy lives across frames; only its position
         // is updated.
         let mut backend = RecordingBackend::new(SCREEN);
-        let (sim, renderer, camera) = setup(&balls_at(&[0.0]), &mut backend, DVec2::ZERO);
+        let (sim, renderer, camera) =
+            setup(&scene(vec![ball_at(0.0, 0.0)]), &mut backend, DVec3::ZERO);
         for _ in 0..3 {
             renderer.draw(&mut backend, &sim, &camera);
         }
@@ -372,61 +423,55 @@ mod tests {
     }
 
     #[test]
-    fn camera_is_sent_where_it_looks_with_its_zoom_in_physical_pixels() {
-        // The camera thinks in logical pixels; the backend gets physical
-        // ones: twice as many per metre on a Retina display.
-        let retina = Screen {
-            width: 2000.0,
-            height: 1200.0,
-            scale: 2.0,
-        };
-        let mut backend = RecordingBackend::new(retina);
-        let look_at = DVec2::new(40.0, 12.0);
-        let (sim, renderer, camera) = setup(&balls_at(&[0.0]), &mut backend, look_at);
+    fn camera_is_sent_in_render_axes() {
+        let mut backend = RecordingBackend::new(SCREEN);
+        let target = DVec3::new(40.0, 12.0, -5.0);
+        let (sim, renderer, camera) = setup(&scene(vec![ball_at(0.0, 0.0)]), &mut backend, target);
         renderer.draw(&mut backend, &sim, &camera);
-        assert_eq!(backend.camera_at, Some(Vec2::new(40.0, 12.0)));
-        assert_eq!(backend.zoom, 2.0 * camera::DEFAULT_ZOOM);
+        let (eye, sent_target) = backend.camera.expect("a camera is set");
+        assert_eq!(sent_target, to_render(target));
+        assert_eq!(eye, to_render(camera.eye()));
     }
 
     #[test]
-    fn ground_line_and_ruler_span_the_visible_range() {
-        // 1500 px wide at 15 px/m = 100 m across, centred on x = 100 m.
-        let wide = Screen {
-            width: 1500.0,
-            height: 600.0,
-            scale: 1.0,
-        };
-        let mut backend = RecordingBackend::new(wide);
-        let look_at = DVec2::new(100.0, 10.0);
-        let (sim, renderer, camera) = setup(&balls_at(&[0.0]), &mut backend, look_at);
+    fn the_grid_lies_on_the_ground_around_the_camera_target() {
+        let mut backend = RecordingBackend::new(SCREEN);
+        let target = DVec3::new(100.0, -40.0, -5.0);
+        let (sim, renderer, camera) = setup(&scene(vec![ball_at(0.0, 0.0)]), &mut backend, target);
         renderer.draw(&mut backend, &sim, &camera);
-        // The ground: one line across the visible range, at y = 0.
-        assert_eq!(
-            backend.lines[0],
-            (Vec2::new(50.0, 0.0), Vec2::new(150.0, 0.0))
-        );
-        // Then one tick per whole metre from 50 to 150 m.
-        assert_eq!(backend.lines.len(), 1 + 101);
-        assert_eq!(backend.lines[1].0, Vec2::new(50.0, 0.0));
+        // 51 lines each way, all on the ground (render y = 0), spanning
+        // 50 m either side of the target.
+        assert_eq!(backend.lines.len(), 2 * 51);
+        assert!(backend.lines.iter().all(|(a, b)| a.y == 0.0 && b.y == 0.0));
+        let easts = backend.lines.iter().flat_map(|(a, b)| [a.x, b.x]);
+        let (min, max) = easts.fold((f32::MAX, f32::MIN), |(lo, hi), x| (lo.min(x), hi.max(x)));
+        assert_eq!((min, max), (-90.0, 10.0));
     }
 
     #[test]
-    fn ruler_has_a_tick_on_every_whole_metre_in_range() {
-        let xs: Vec<f64> = ruler_ticks(0.5, 3.2).map(|t| t.x).collect();
-        assert_eq!(xs, [1.0, 2.0, 3.0]);
+    fn the_grid_stays_fixed_to_the_ground_as_the_camera_moves() {
+        let lines = |centre| {
+            grid_lines(centre)
+                .map(|l| (l.from, l.to))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(lines(DVec2::new(1.0, 2.0)), lines(DVec2::new(3.0, -4.0)));
     }
 
     #[test]
-    fn every_tenth_tick_is_longer_including_negative_ones() {
-        let ticks: Vec<Tick> = ruler_ticks(-10.0, 10.0).collect();
-        assert_eq!(ticks.len(), 21);
-        let long: Vec<f64> = ticks
-            .iter()
-            .filter(|t| t.length == MAJOR_TICK)
-            .map(|t| t.x)
+    fn every_fifth_grid_line_is_a_major_one() {
+        let majors: Vec<f64> = grid_lines(DVec2::ZERO)
+            // East-west lines: their north coordinate doesn't change.
+            .filter(|line| line.major && line.from.x == line.to.x)
+            .map(|line| line.from.x)
             .collect();
-        assert_eq!(long, [-10.0, 0.0, 10.0]);
-        const { assert!(MINOR_TICK < MAJOR_TICK) } // checked at compile time
+        // East-west lines every 10 m (5 x 2 m), from 50 m south to 50 m north.
+        assert_eq!(
+            majors,
+            [
+                -50.0, -40.0, -30.0, -20.0, -10.0, 0.0, 10.0, 20.0, 30.0, 40.0, 50.0
+            ]
+        );
     }
 
     #[test]

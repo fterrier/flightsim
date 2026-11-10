@@ -92,10 +92,10 @@ git checkout master       # back to the latest version
 |---|---|
 | `Esc` | Quit |
 | `R` | Throw the balls again (reloads the scene; restarts sim and real time) |
-| `C` | Switch camera: follow (glides after the orange ball) / fixed |
+| `C` | Switch camera: follow (glides after the orange ball, seen from the south-west) / fixed |
 | `L` | Debug, on/off: slow frames (+50 ms each, ~15 FPS). The simulation keeps real-time pace. |
 | `K` | Debug, on/off: stalled frames (+400 ms each). Frame time is capped, so sim time falls behind real time. |
-| Mouse wheel | Zoom in / out (limited; the camera reframes to keep the ground in view) |
+| Mouse wheel | Camera closer / further (5 to 400 m) |
 
 Each step that adds controls updates this table.
 

@@ -9,7 +9,7 @@
 //! reset it on restart (a restart is simply a new `Simulation`).
 
 use crate::timestep::FixedTimestep;
-use physics::{Body, DVec2, World};
+use physics::{Body, DVec3, World};
 
 /// What a game can see of the world: its data, read-only, and none of the
 /// machinery. Cheap to pass by value: 24 bytes, a *borrow* of the world's
@@ -39,7 +39,7 @@ pub(crate) struct Simulation {
     /// place every step: no allocation.
     // TODO(step-08): orientations too (quaternions, blended with `slerp`).
     // TODO(step-11): only for *moving* entities; static ones need none.
-    previous: Vec<DVec2>,
+    previous: Vec<DVec3>,
 }
 
 impl Simulation {
@@ -76,7 +76,7 @@ impl Simulation {
     /// behind the simulation. The alternative, *extrapolating* ahead from
     /// the velocity, overshoots whenever something changes direction (like
     /// a ball landing).
-    pub(crate) fn drawn_positions(&self) -> impl Iterator<Item = DVec2> + '_ {
+    pub(crate) fn drawn_positions(&self) -> impl Iterator<Item = DVec3> + '_ {
         let alpha = self.clock.alpha();
         self.previous
             .iter()
@@ -85,7 +85,7 @@ impl Simulation {
     }
 
     /// Where to draw body number `index` now (see `drawn_positions`).
-    pub(crate) fn drawn_position(&self, index: usize) -> DVec2 {
+    pub(crate) fn drawn_position(&self, index: usize) -> DVec3 {
         let current = self.world.bodies[index].motion.position;
         self.previous[index].lerp(current, self.clock.alpha())
     }
@@ -107,29 +107,29 @@ impl Simulation {
     }
 }
 
-fn positions(world: &World) -> impl Iterator<Item = DVec2> + '_ {
+fn positions(world: &World) -> impl Iterator<Item = DVec3> + '_ {
     world.bodies.iter().map(|body| body.motion.position)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use physics::{Body, Circle, Motion, STANDARD_GRAVITY};
+    use physics::{Body, Motion, STANDARD_GRAVITY, Sphere};
 
     /// Exact in binary floating point, so step counts and positions below
     /// can be compared exactly.
     const DT: f64 = 1.0 / 64.0;
     const RADIUS: f64 = 0.5;
 
-    /// A ball resting on the ground at `x`, sliding right at `speed`
-    /// (m/s); the ground stops gravity from moving it vertically.
-    fn sliding_ball(x: f64, speed: f64) -> Body {
+    /// A ball resting on the ground `north` metres north, sliding north at
+    /// `speed` (m/s); the ground stops gravity from moving it vertically.
+    fn sliding_ball(north: f64, speed: f64) -> Body {
         Body {
             motion: Motion {
-                position: DVec2::new(x, RADIUS),
-                velocity: DVec2::new(speed, 0.0),
+                position: DVec3::new(north, 0.0, -RADIUS),
+                velocity: DVec3::new(speed, 0.0, 0.0),
             },
-            collider: Circle { radius: RADIUS },
+            collider: Sphere { radius: RADIUS },
         }
     }
 

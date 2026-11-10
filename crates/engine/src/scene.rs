@@ -7,7 +7,7 @@
 //! its visual to the renderer. Object `i` becomes physics body `i` and
 //! render proxy `i`: that shared index is what links them.
 
-use physics::{Body, DVec2, World};
+use physics::{Body, DVec3, World};
 
 use crate::render::{Color, Visual};
 
@@ -31,7 +31,7 @@ pub struct Scene {
     /// Sky colour, in linear light (see `render::Color`).
     pub background: Color,
     /// The world's gravity, in m/s² (usually `physics::STANDARD_GRAVITY`).
-    pub gravity: DVec2,
+    pub gravity: DVec3,
 }
 
 impl Scene {
@@ -46,19 +46,19 @@ impl Scene {
 mod tests {
     use super::*;
     use crate::render::{Shape, WHITE};
-    use physics::{Circle, Motion, STANDARD_GRAVITY};
+    use physics::{DVec3, Motion, STANDARD_GRAVITY, Sphere};
 
     fn ball(x: f64) -> SceneObject {
         SceneObject {
             body: Body {
                 motion: Motion {
-                    position: DVec2::new(x, 1.0),
-                    velocity: DVec2::ZERO,
+                    position: DVec3::new(x, 0.0, -1.0),
+                    velocity: DVec3::ZERO,
                 },
-                collider: Circle { radius: 1.0 },
+                collider: Sphere { radius: 1.0 },
             },
             visual: Visual {
-                shape: Shape::Circle { radius: 1.0 },
+                shape: Shape::Sphere { radius: 1.0 },
                 color: WHITE,
             },
         }

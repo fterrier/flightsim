@@ -14,12 +14,13 @@ use std::time::Instant;
 
 use engine::platform::{Engine, Flow, ProxyId, RenderBackend, Screen};
 use engine::{Color, Game, InputEvent, Key, Shape, Visual};
-use glam::Vec2;
-use kiss3d::camera::PanZoomCamera2d;
+use glam::{Vec2, Vec3};
+use kiss3d::camera::OrbitCamera3d;
 use kiss3d::color::Color as Kiss3dColor;
 use kiss3d::event::{Action, Key as Kiss3dKey, WindowEvent};
-use kiss3d::glamx::Vec2 as Kiss3dVec2;
-use kiss3d::scene::SceneNode2d;
+use kiss3d::glamx::{Vec2 as Kiss3dVec2, Vec3 as Kiss3dVec3};
+use kiss3d::light::Light;
+use kiss3d::scene::SceneNode3d;
 use kiss3d::text::Font;
 use kiss3d::window::Window;
 
@@ -68,12 +69,12 @@ async fn run_async(title: &str, game: impl Game) {
 struct Kiss3dBackend {
     window: Window,
     /// Objects kiss3d keeps between frames (retained mode).
-    scene: SceneNode2d,
-    /// Projects world space (metres, y up) onto the screen, as told by
+    scene: SceneNode3d,
+    /// Projects the world (render axes: y up) onto the screen, placed by
     /// `set_camera`.
-    camera: PanZoomCamera2d,
+    camera: OrbitCamera3d,
     /// Render proxies, indexed by `ProxyId`.
-    proxies: Vec<SceneNode2d>,
+    proxies: Vec<SceneNode3d>,
     font: Arc<Font>,
 }
 
@@ -82,14 +83,24 @@ impl Kiss3dBackend {
     /// Vulkan/DX12 elsewhere).
     async fn new(title: &str, width: u32, height: u32) -> Self {
         let window = Window::new_with_size(title, width, height).await;
-        // Our `Camera` steers and zooms: turn off kiss3d's own mouse
-        // handling (drag to pan; a zoom step of 1 makes the wheel a no-op).
-        let mut camera = PanZoomCamera2d::new(Kiss3dVec2::ZERO, 1.0);
+        // Our `Camera` decides where to look from: turn off kiss3d's own
+        // camera controls (mouse rotate and drag, reset key; a zoom step of
+        // 1 makes the wheel a no-op) and its limits, which would otherwise
+        // override what `set_camera` asks for. Far plane: 5 km.
+        let (eye, at) = (Kiss3dVec3::new(0.0, 10.0, 40.0), Kiss3dVec3::ZERO);
+        let mut camera =
+            OrbitCamera3d::new_with_frustum(std::f32::consts::FRAC_PI_4, 0.1, 5000.0, eye, at);
+        camera.rebind_rotate_button(None);
         camera.rebind_drag_button(None);
-        camera.set_zoom_step(1.0);
+        camera.rebind_reset_key(None);
+        camera.set_dist_step(1.0);
+        camera.set_min_dist(0.0);
+        camera.set_max_dist(f32::MAX);
+        camera.set_min_pitch(0.0);
+        camera.set_max_pitch(std::f32::consts::PI);
         Self {
             window,
-            scene: SceneNode2d::empty(),
+            scene: SceneNode3d::empty(),
             camera,
             proxies: Vec::new(),
             font: Font::default(),
@@ -100,7 +111,7 @@ impl Kiss3dBackend {
     /// (keys, mouse wheel, resize). Returns `false` once the window closes.
     async fn present(&mut self) -> bool {
         self.window
-            .render_2d(&mut self.scene, &mut self.camera)
+            .render_3d(&mut self.scene, &mut self.camera)
             .await
     }
 }
@@ -118,28 +129,33 @@ impl RenderBackend for Kiss3dBackend {
         self.window.set_background_color(kiss3d_color(color));
     }
 
-    fn set_camera(&mut self, at: Vec2, zoom: f32) {
-        self.camera.set_at(kiss3d_vec(at));
-        self.camera.set_zoom(zoom);
+    fn set_sun(&mut self, direction: Vec3) {
+        let sun = Light::directional(kiss3d_vec3(direction)).with_intensity(2.0);
+        self.scene.add_light(sun);
+    }
+
+    fn set_camera(&mut self, eye: Vec3, target: Vec3) {
+        self.camera.look_at(kiss3d_vec3(eye), kiss3d_vec3(target));
     }
 
     fn create_proxy(&mut self, visual: &Visual) -> ProxyId {
         let mut node = match visual.shape {
-            Shape::Circle { radius } => self.scene.add_circle(radius),
+            Shape::Sphere { radius } => self.scene.add_sphere(radius),
         };
         node.set_color(kiss3d_color(visual.color));
         self.proxies.push(node);
         ProxyId(self.proxies.len() - 1)
     }
 
-    fn set_position(&mut self, proxy: ProxyId, position: Vec2) {
-        self.proxies[proxy.0].set_position(kiss3d_vec(position));
+    fn set_position(&mut self, proxy: ProxyId, position: Vec3) {
+        self.proxies[proxy.0].set_position(kiss3d_vec3(position));
     }
 
-    fn world_line(&mut self, from: Vec2, to: Vec2, color: Color, width: f32) {
-        let (from, to) = (kiss3d_vec(from), kiss3d_vec(to));
+    fn world_line(&mut self, from: Vec3, to: Vec3, color: Color, width: f32) {
+        let (from, to) = (kiss3d_vec3(from), kiss3d_vec3(to));
+        // `false`: width in screen pixels, not shrinking with distance.
         self.window
-            .draw_line_2d(from, to, kiss3d_color(color), width);
+            .draw_line(from, to, kiss3d_color(color), width, false);
     }
 
     fn screen_text(&mut self, text: &str, at: Vec2, size: f32, color: Color) {
@@ -149,10 +165,14 @@ impl RenderBackend for Kiss3dBackend {
     }
 }
 
-/// Same data, different crates: our `glam` vector vs the (older) `glam`
+/// Same data, different crates: our `glam` vectors vs the (older) `glam`
 /// version kiss3d uses internally.
 fn kiss3d_vec(v: Vec2) -> Kiss3dVec2 {
     Kiss3dVec2::new(v.x, v.y)
+}
+
+fn kiss3d_vec3(v: Vec3) -> Kiss3dVec3 {
+    Kiss3dVec3::new(v.x, v.y, v.z)
 }
 
 fn kiss3d_color(c: Color) -> Kiss3dColor {

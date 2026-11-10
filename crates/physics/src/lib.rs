@@ -6,40 +6,43 @@
 //!   and (later) replays possible.
 //! - SI units everywhere: metres, seconds, kilograms, radians.
 //!
-//! Coordinates (2D steps): x points right, y points up, origin on the ground.
+//!
+//! Coordinates: **NED**, as in flight-dynamics textbooks (Stevens & Lewis,
+//! Beard & McLain): x points **N**orth, y **E**ast, z **D**own, origin on
+//! the ground. So *altitude is -z*, and a climbing body has a negative
+//! vertical velocity. Right-handed: north × east = down. The renderer
+//! converts to its own axes in exactly one place (see ROADMAP "Axes").
 
 /// Re-exported so the engine (and, through it, games) use exactly the same
-/// vector type as the physics.
-pub use glam::DVec2;
+/// vector types as the physics. `DVec2` is handy for horizontal (north,
+/// east) quantities.
+pub use glam::{DVec2, DVec3};
 
-/// Standard gravity at the Earth's surface, in m/s², pointing down: the
-/// usual value for a [`World`]'s `gravity`.
+/// Standard gravity at the Earth's surface, in m/s², pointing down (+z in
+/// NED): the usual value for a [`World`]'s `gravity`.
 ///
 /// It's an *acceleration*, the same for every body whatever its mass
 /// (Galileo), so a falling ball needs no mass yet.
-// TODO(step-04): in NED axes (z down) it points along +z.
-pub const STANDARD_GRAVITY: DVec2 = DVec2::new(0.0, -9.80665);
+pub const STANDARD_GRAVITY: DVec3 = DVec3::new(0.0, 0.0, 9.80665);
 
 /// How something moves: where it is and how fast it goes.
 ///
 /// Plain data, no behaviour: in ECS terms this is a *component*.
 /// Behaviour lives in free functions such as [`integrate`] (a *system*).
-// TODO(step-04): DVec2 -> DVec3, in a NED frame (x north, y east, z down)
-// as in flight-dynamics textbooks; see ROADMAP "Axes".
 // TODO(step-06): mass arrives with forces (acceleration = force / mass).
+// TODO(step-08): orientation and angular velocity (rigid body).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Motion {
-    /// Position, in metres.
-    pub position: DVec2,
-    /// Velocity, in metres per second.
-    pub velocity: DVec2,
+    /// Position (NED), in metres.
+    pub position: DVec3,
+    /// Velocity (NED), in metres per second.
+    pub velocity: DVec3,
 }
 
-/// A collision shape: a circle of `radius` metres, centred on its body's
+/// A collision shape: a sphere of `radius` metres, centred on its body's
 /// position.
-// TODO(step-04): becomes a sphere.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Circle {
+pub struct Sphere {
     /// In metres.
     pub radius: f64,
 }
@@ -55,7 +58,7 @@ pub struct Circle {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Body {
     pub motion: Motion,
-    pub collider: Circle,
+    pub collider: Sphere,
 }
 
 /// Everything the simulation knows about.
@@ -73,14 +76,14 @@ pub struct World {
     /// Acceleration applied to every body, in m/s². A setting of the world,
     /// as in Rapier (`gravity` passed to each step) or Box2D (`b2WorldDef`):
     /// the engine assumes no particular planet, nor which way is down.
-    pub gravity: DVec2,
+    pub gravity: DVec3,
     /// All simulated objects, stored contiguously. Their index identifies
     /// them (the renderer's proxy `i` shows body `i`).
     pub bodies: Vec<Body>,
 }
 
 impl World {
-    pub fn new(bodies: Vec<Body>, gravity: DVec2) -> Self {
+    pub fn new(bodies: Vec<Body>, gravity: DVec3) -> Self {
         Self {
             time: 0.0,
             gravity,
@@ -125,13 +128,14 @@ impl World {
 /// (springs) in step 12. Semi-implicit Euler keeps energy bounded, for the
 /// same cost. Its error is proportional to `dt` ("first-order"); that's
 /// what the tests check against the exact free-fall formula.
-fn integrate(motion: &mut Motion, acceleration: DVec2, dt: f64) {
+fn integrate(motion: &mut Motion, acceleration: DVec3, dt: f64) {
     motion.velocity += acceleration * dt;
     motion.position += motion.velocity * dt;
 }
 
-/// Keeps something moving with `motion`, with a circular collider
-/// `shape`, from going through the ground (y = 0).
+/// Keeps something moving with `motion`, with a spherical collider
+/// `shape`, from going through the ground (the plane z = 0; z is down, so
+/// "below the ground" means z > 0).
 ///
 /// Integration moves in discrete jumps, so a falling ball ends up slightly
 /// *inside* the ground on the step it lands. We push it back on top and
@@ -139,10 +143,12 @@ fn integrate(motion: &mut Motion, acceleration: DVec2, dt: f64) {
 /// Sideways motion is kept, as there's no friction yet.
 // TODO(step-12): replace with landing gear contacts: spring-damper forces
 // at each wheel, plus rolling friction and brakes.
-fn ground_contact(motion: &mut Motion, shape: &Circle) {
-    if motion.position.y < shape.radius {
-        motion.position.y = shape.radius;
-        motion.velocity.y = motion.velocity.y.max(0.0);
+fn ground_contact(motion: &mut Motion, shape: &Sphere) {
+    // The centre must stay `radius` above the ground: z <= -radius.
+    if motion.position.z > -shape.radius {
+        motion.position.z = -shape.radius;
+        // Cancel downward (+z) speed, keep any upward (-z) speed.
+        motion.velocity.z = motion.velocity.z.min(0.0);
     }
 }
 
@@ -152,15 +158,16 @@ mod tests {
 
     const DT: f64 = 1.0 / 120.0;
     const RADIUS: f64 = 0.4;
-    const BALL: Circle = Circle { radius: RADIUS };
+    const BALL: Sphere = Sphere { radius: RADIUS };
     /// g, as a positive number, in m/s².
-    const G: f64 = -STANDARD_GRAVITY.y;
+    const G: f64 = 9.80665;
 
-    /// 20 m up, thrown sideways at 5 m/s.
+    /// 20 m above the ground (z is *down*, so z = -20), thrown north at
+    /// 5 m/s.
     fn thrown() -> Motion {
         Motion {
-            position: DVec2::new(0.0, 20.0),
-            velocity: DVec2::new(5.0, 0.0),
+            position: DVec3::new(0.0, 0.0, -20.0),
+            velocity: DVec3::new(5.0, 0.0, 0.0),
         }
     }
 
@@ -172,14 +179,14 @@ mod tests {
         }
     }
 
-    /// A ball of `radius` lying still on the ground at `x`.
-    fn resting_ball(x: f64, radius: f64) -> Body {
+    /// A ball of `radius` lying still on the ground, `north` metres north.
+    fn resting_ball(north: f64, radius: f64) -> Body {
         Body {
             motion: Motion {
-                position: DVec2::new(x, radius),
-                velocity: DVec2::ZERO,
+                position: DVec3::new(north, 0.0, -radius),
+                velocity: DVec3::ZERO,
             },
-            collider: Circle { radius },
+            collider: Sphere { radius },
         }
     }
 
@@ -193,73 +200,86 @@ mod tests {
     }
 
     #[test]
-    fn gravity_points_down_with_standard_value() {
-        assert_eq!(STANDARD_GRAVITY, DVec2::new(0.0, -9.80665));
+    fn gravity_points_down_which_is_plus_z_in_ned() {
+        assert_eq!(STANDARD_GRAVITY, DVec3::new(0.0, 0.0, G));
+    }
+
+    #[test]
+    fn ned_axes_are_right_handed() {
+        // North × East = Down, like x × y = z: the usual maths (cross
+        // products, rotations) works unchanged.
+        assert_eq!(DVec3::X.cross(DVec3::Y), DVec3::Z);
     }
 
     #[test]
     fn without_acceleration_a_body_moves_at_constant_velocity() {
         let mut motion = thrown();
-        integrate(&mut motion, DVec2::ZERO, 0.5);
-        assert_eq!(motion.position, DVec2::new(2.5, 20.0));
-        assert_eq!(motion.velocity, DVec2::new(5.0, 0.0));
+        integrate(&mut motion, DVec3::ZERO, 0.5);
+        assert_eq!(motion.position, DVec3::new(2.5, 0.0, -20.0));
+        assert_eq!(motion.velocity, DVec3::new(5.0, 0.0, 0.0));
     }
 
     #[test]
     fn velocity_is_updated_before_position() {
         // Semi-implicit Euler: the position update already uses the *new*
         // velocity. (Explicit Euler would use the old one and leave the
-        // body at y = 0 after this first step.)
+        // body where it was after this first step.)
         let mut motion = Motion {
-            position: DVec2::ZERO,
-            velocity: DVec2::ZERO,
+            position: DVec3::ZERO,
+            velocity: DVec3::ZERO,
         };
-        integrate(&mut motion, DVec2::new(0.0, -10.0), 0.5);
-        assert_eq!(motion.velocity, DVec2::new(0.0, -5.0));
-        assert_eq!(motion.position, DVec2::new(0.0, -2.5));
+        integrate(&mut motion, DVec3::new(0.0, 0.0, 10.0), 0.5);
+        assert_eq!(motion.velocity, DVec3::new(0.0, 0.0, 5.0));
+        assert_eq!(motion.position, DVec3::new(0.0, 0.0, 2.5));
     }
 
     #[test]
     fn free_fall_matches_the_analytic_solution_up_to_the_known_euler_error() {
-        // Exact:  y(t) = y0 - g t²/2,   vy(t) = -g t.
+        // Exact (z down):  z(t) = z0 + g t²/2,   vz(t) = g t.
         // Semi-implicit Euler with a constant acceleration gives exactly
-        //   y_n = y0 - g t²/2 - g t dt/2,
+        //   z_n = z0 + g t²/2 + g t dt/2,
         // i.e. it falls g·t·dt/2 too far (4 cm here). The error is
         // proportional to dt: the method is "first-order accurate".
         let t = 1.0;
         let motion = fly(thrown(), t, DT);
-        let exact_y = 20.0 - 0.5 * G * t * t;
+        let exact_z = -20.0 + 0.5 * G * t * t;
         let euler_error = 0.5 * G * t * DT;
-        assert!((motion.position.y - (exact_y - euler_error)).abs() < 1e-9);
+        assert!((motion.position.z - (exact_z + euler_error)).abs() < 1e-9);
         // Velocity under constant acceleration is exact (up to rounding).
-        assert!((motion.velocity.y - (-G * t)).abs() < 1e-9);
+        assert!((motion.velocity.z - G * t).abs() < 1e-9);
     }
 
     #[test]
     fn halving_the_timestep_halves_the_error() {
-        let exact_y = 20.0 - 0.5 * G;
-        let error = |dt: f64| (fly(thrown(), 1.0, dt).position.y - exact_y).abs();
+        let exact_z = -20.0 + 0.5 * G;
+        let error = |dt: f64| (fly(thrown(), 1.0, dt).position.z - exact_z).abs();
         let ratio = error(DT) / error(DT / 2.0);
         assert!((ratio - 2.0).abs() < 1e-6, "ratio = {ratio}");
     }
 
     #[test]
     fn gravity_does_not_change_horizontal_motion() {
-        let motion = fly(thrown(), 1.0, DT);
-        assert!((motion.position.x - 5.0).abs() < 1e-9);
-        assert_eq!(motion.velocity.x, 5.0);
+        // Thrown north-west: 5 m/s north, 3 m/s west (-east).
+        let start = Motion {
+            velocity: DVec3::new(5.0, -3.0, 0.0),
+            ..thrown()
+        };
+        let motion = fly(start, 1.0, DT);
+        assert!((motion.position.truncate() - DVec2::new(5.0, -3.0)).length() < 1e-9);
+        assert_eq!(motion.velocity.truncate(), DVec2::new(5.0, -3.0));
     }
 
     #[test]
     fn ground_contact_puts_a_sunken_ball_back_on_the_ground() {
+        // Its centre is 0.1 m *below* the ground (z = +0.1), falling.
         let mut motion = Motion {
-            position: DVec2::new(3.0, -0.1),
-            velocity: DVec2::new(5.0, -2.0),
+            position: DVec3::new(3.0, 4.0, 0.1),
+            velocity: DVec3::new(5.0, 6.0, 2.0),
         };
         ground_contact(&mut motion, &BALL);
-        assert_eq!(motion.position, DVec2::new(3.0, RADIUS));
-        // Falling stops; no friction yet, so it keeps sliding sideways.
-        assert_eq!(motion.velocity, DVec2::new(5.0, 0.0));
+        assert_eq!(motion.position, DVec3::new(3.0, 4.0, -RADIUS));
+        // Falling stops; no friction yet, so it keeps sliding.
+        assert_eq!(motion.velocity, DVec3::new(5.0, 6.0, 0.0));
     }
 
     #[test]
@@ -273,17 +293,18 @@ mod tests {
     fn gravity_is_a_setting_of_the_world() {
         // Rapier and Box2D make gravity a world parameter too: the engine
         // assumes no planet. Without gravity, a thrown ball flies straight.
-        let mut world = World::new(vec![thrown_ball()], DVec2::ZERO);
+        let mut world = World::new(vec![thrown_ball()], DVec3::ZERO);
         for _ in 0..120 {
             world.step(DT);
         }
-        assert_eq!(world.bodies[0].motion.velocity, DVec2::new(5.0, 0.0));
-        assert!((world.bodies[0].motion.position - DVec2::new(5.0, 20.0)).length() < 1e-9);
+        assert_eq!(world.bodies[0].motion.velocity, DVec3::new(5.0, 0.0, 0.0));
+        let expected = DVec3::new(5.0, 0.0, -20.0);
+        assert!((world.bodies[0].motion.position - expected).length() < 1e-9);
 
-        // Gravity can point anywhere: sideways, it bends the path sideways.
-        world.gravity = DVec2::new(-2.0, 0.0);
+        // Gravity can point anywhere: westwards, it bends the path west.
+        world.gravity = DVec3::new(0.0, -2.0, 0.0);
         world.step(1.0);
-        assert_eq!(world.bodies[0].motion.velocity, DVec2::new(3.0, 0.0));
+        assert_eq!(world.bodies[0].motion.velocity, DVec3::new(5.0, -2.0, 0.0));
     }
 
     #[test]
@@ -301,23 +322,23 @@ mod tests {
         // Its centre falls h = 20 m - radius, which takes t = sqrt(2h/g).
         let impact = (2.0 * (20.0 - RADIUS) / G).sqrt();
         let mut world = World::new(vec![thrown_ball()], STANDARD_GRAVITY);
-        let height = |world: &World| world.bodies[0].motion.position.y;
+        let altitude = |world: &World| -world.bodies[0].motion.position.z;
 
         while world.time() < impact - 2.0 * DT {
             world.step(DT);
         }
-        assert!(height(&world) > RADIUS, "landed too early");
+        assert!(altitude(&world) > RADIUS, "landed too early");
 
         while world.time() < impact + 2.0 * DT {
             world.step(DT);
         }
-        assert_eq!(height(&world), RADIUS, "not landed in time");
-        assert_eq!(world.bodies[0].motion.velocity.y, 0.0);
+        assert_eq!(altitude(&world), RADIUS, "not landed in time");
+        assert_eq!(world.bodies[0].motion.velocity.z, 0.0);
 
         for _ in 0..600 {
             world.step(DT); // 5 more seconds: it must not sink or bounce
         }
-        assert_eq!(height(&world), RADIUS);
+        assert_eq!(altitude(&world), RADIUS);
     }
 
     #[test]
@@ -331,7 +352,7 @@ mod tests {
         }
         // The thrown ball fell; the big one, resting on its 1 m radius,
         // stayed put.
-        assert!(world.bodies[0].motion.position.y < 20.0);
+        assert!(world.bodies[0].motion.position.z > -20.0);
         assert_eq!(world.bodies[1], resting_ball(5.0, 1.0));
     }
 

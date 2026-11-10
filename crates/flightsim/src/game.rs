@@ -32,19 +32,22 @@ impl Game for FlightSim {
     }
 
     fn write_hud(&self, world: WorldView<'_>, focus: usize, out: &mut String) -> fmt::Result {
+        // The physics is NED (z down); the HUD speaks like a pilot: altitude
+        // and climb rate are positive upwards.
         let body = &world.bodies[focus];
-        let motion = &body.motion;
+        let (position, velocity) = (body.motion.position, body.motion.velocity);
         write!(
             out,
-            "x = {:.1} m\n\
-             height = {:.1} m\n\
-             vertical speed = {:.1} m/s\n\
+            "north = {:.1} m, east = {:.1} m\n\
+             altitude = {:.1} m\n\
+             climb rate = {:.1} m/s\n\
              R: throw again | C: camera | scroll: zoom | \
              L: slow frames | K: stalled frames | Esc: quit",
-            motion.position.x,
+            position.x,
+            position.y,
             // Height of the bottom of the ball, so it reads 0 when resting.
-            motion.position.y - body.collider.radius,
-            motion.velocity.y,
+            -position.z - body.collider.radius,
+            -velocity.z,
         )
     }
 }
@@ -52,7 +55,7 @@ impl Game for FlightSim {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::{Body, Circle, DVec2, Motion};
+    use engine::{Body, DVec3, Motion, Sphere};
 
     fn command(event: InputEvent) -> Option<Command> {
         FlightSim.command_for(event)
@@ -81,24 +84,26 @@ mod tests {
     }
 
     #[test]
-    fn hud_describes_the_focused_ball_and_the_keys() {
-        let ball = |x: f64, vy: f64| Body {
+    fn hud_describes_the_focused_ball_in_flight_terms_and_the_keys() {
+        // NED: 42 m north, 7 m east, centre 2.4 m up (z = -2.4), falling
+        // at 3 m/s (+z is down).
+        let ball = |north: f64, east: f64| Body {
             motion: Motion {
-                position: DVec2::new(x, 2.4),
-                velocity: DVec2::new(0.0, vy),
+                position: DVec3::new(north, east, -2.4),
+                velocity: DVec3::new(0.0, 0.0, 3.0),
             },
-            collider: Circle { radius: 0.4 },
+            collider: Sphere { radius: 0.4 },
         };
-        let bodies = [ball(1.0, 0.0), ball(42.0, -3.0)];
+        let bodies = [ball(1.0, 0.0), ball(42.0, 7.0)];
         let world = WorldView {
             time: 0.0,
             bodies: &bodies,
         };
         let mut out = String::new();
         FlightSim.write_hud(world, 1, &mut out).unwrap();
-        assert!(out.contains("x = 42.0 m"), "{out}");
-        assert!(out.contains("height = 2.0 m"), "{out}"); // bottom of the ball
-        assert!(out.contains("vertical speed = -3.0 m/s"), "{out}");
+        assert!(out.contains("north = 42.0 m, east = 7.0 m"), "{out}");
+        assert!(out.contains("altitude = 2.0 m"), "{out}"); // bottom of the ball
+        assert!(out.contains("climb rate = -3.0 m/s"), "{out}"); // falling
         assert!(out.contains("R: throw again"), "{out}");
     }
 }

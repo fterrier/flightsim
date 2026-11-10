@@ -17,7 +17,7 @@ use std::time::Duration;
 use crate::camera::Camera;
 use crate::hud::{FrameStats, Hud};
 use crate::input::{Command, InputEvent};
-use crate::render::{RenderBackend, Renderer, viewport};
+use crate::render::{RenderBackend, Renderer};
 use crate::scene::Scene;
 use crate::simulation::{Simulation, WorldView};
 
@@ -89,8 +89,7 @@ pub struct Engine<G: Game> {
     /// The loaded scene, kept to reload it on restart.
     scene: Scene,
     sim: Simulation,
-    /// Where to look and how far zoomed: follows the scene's focus.
-    // TODO(step-05): 3D chase and orbit cameras.
+    /// Where to look from, and how far: follows the scene's focus.
     camera: Camera,
     renderer: Renderer,
     hud: Hud,
@@ -108,8 +107,7 @@ impl<G: Game> Engine<G> {
         let scene = game.scene();
         let sim = Simulation::new(scene.world(), game.physics_dt());
         let start = scene.objects[scene.focus].body.motion.position;
-        let mut camera = Camera::new(start);
-        camera.snap_to(start, viewport(backend.screen()));
+        let camera = Camera::new(start);
         let renderer = Renderer::new(backend, &scene);
         let mut engine = Self {
             game,
@@ -141,8 +139,7 @@ impl<G: Game> Engine<G> {
         // The camera glides towards where the focused object is drawn
         // (interpolated), in real frame time.
         let target = self.sim.drawn_position(self.scene.focus);
-        self.camera
-            .update(target, frame_time, viewport(backend.screen()));
+        self.camera.update(target, frame_time);
         self.draw(backend, steps);
     }
 
@@ -219,10 +216,11 @@ pub(crate) mod testing {
     use crate::input::Key;
     use crate::render::{Color, Shape, Visual, WHITE};
     use crate::scene::SceneObject;
-    use physics::{Body, Circle, DVec2, Motion, STANDARD_GRAVITY};
+    use physics::{Body, DVec3, Motion, STANDARD_GRAVITY, Sphere};
 
     pub(crate) struct TestGame {
-        /// Where the balls start (x, metres) and how fast they slide (m/s).
+        /// Where the balls start (metres north) and how fast they slide
+        /// north (m/s).
         pub balls: Vec<(f64, f64)>,
         pub focus: usize,
     }
@@ -234,16 +232,16 @@ pub(crate) mod testing {
         }
 
         fn scene(&self) -> Scene {
-            let ball = |&(x, speed): &(f64, f64)| SceneObject {
+            let ball = |&(north, speed): &(f64, f64)| SceneObject {
                 body: Body {
                     motion: Motion {
-                        position: DVec2::new(x, 0.5),
-                        velocity: DVec2::new(speed, 0.0),
+                        position: DVec3::new(north, 0.0, -0.5),
+                        velocity: DVec3::new(speed, 0.0, 0.0),
                     },
-                    collider: Circle { radius: 0.5 },
+                    collider: Sphere { radius: 0.5 },
                 },
                 visual: Visual {
-                    shape: Shape::Circle { radius: 0.5 },
+                    shape: Shape::Sphere { radius: 0.5 },
                     color: WHITE,
                 },
             };
@@ -268,8 +266,8 @@ pub(crate) mod testing {
         }
 
         fn write_hud(&self, world: WorldView<'_>, focus: usize, out: &mut String) -> fmt::Result {
-            let x = world.bodies[focus].motion.position.x;
-            write!(out, "test game: focus at x = {x:.1} m")
+            let north = world.bodies[focus].motion.position.x;
+            write!(out, "test game: focus {north:.1} m north")
         }
     }
 }
@@ -278,10 +276,10 @@ pub(crate) mod testing {
 mod tests {
     use super::testing::TestGame;
     use super::*;
-    use crate::camera::MAX_ZOOM;
     use crate::input::Key;
     use crate::render::Screen;
     use crate::render::fakes::RecordingBackend;
+    use glam::Vec3;
 
     /// Exact in binary floating point.
     const FRAME: f64 = 1.0 / 64.0;
@@ -325,7 +323,7 @@ mod tests {
         // The platform shows a frame before the first `frame()` call.
         let (_, backend) = engine(sliding_ball());
         assert_eq!(backend.proxies.len(), 1);
-        assert!(backend.camera_at.is_some());
+        assert!(backend.camera.is_some());
         assert!(!backend.texts.is_empty());
     }
 
@@ -345,7 +343,10 @@ mod tests {
         };
         let (mut engine, mut backend) = engine(game);
         engine.frame(&mut backend, FRAME);
-        assert_eq!(backend.camera_at.map(|at| at.x), Some(50.0));
+        // Ball 1 rests 50 m north, 0.5 m up: in render axes (east, up,
+        // south) that's (0, 0.5, -50).
+        let (_, target) = backend.camera.expect("a camera is set");
+        assert_eq!(target, Vec3::new(0.0, 0.5, -50.0));
     }
 
     #[test]
@@ -357,7 +358,7 @@ mod tests {
         assert!(text.starts_with("-- FPS"), "{text}"); // not measured yet
         assert!(text.contains("2 physics steps this frame"), "{text}");
         assert!(text.contains("camera: follow"), "{text}");
-        assert!(text.ends_with("test game: focus at x = 2.0 m"), "{text}");
+        assert!(text.ends_with("test game: focus 2.0 m north"), "{text}");
     }
 
     #[test]
@@ -406,9 +407,14 @@ mod tests {
     #[test]
     fn scrolling_zooms_the_camera() {
         let (mut engine, mut backend) = engine(sliding_ball());
-        engine.input(InputEvent::Scroll(1e6)); // far in: the camera clamps
+        let distance = |backend: &RecordingBackend| {
+            let (eye, target) = backend.camera.expect("a camera is set");
+            eye.distance(target)
+        };
+        let before = distance(&backend);
+        engine.input(InputEvent::Scroll(300.0)); // one "doubling": 2x closer
         engine.frame(&mut backend, FRAME);
-        assert_eq!(backend.zoom, MAX_ZOOM);
+        assert!((distance(&backend) - before / 2.0).abs() < 1e-3);
     }
 
     #[test]
