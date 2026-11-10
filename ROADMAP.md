@@ -73,8 +73,12 @@ crates/
 ```
 
 A game plugs in through `engine::Game`: its physics rate, its scene, its
-input bindings (input event -> `Command`) and its own HUD lines (written
-from read-only world data). Everything else is the engine's. Games
+input bindings (input event -> `Command`) and its own HUD lines, written
+from a `WorldView`: the world's data, borrowed read-only (no copy), without
+the machinery. Stepping physics is the engine's job: `World::step` is
+public in the `physics` library (as `b2World_Step` in Box2D or
+`PhysicsPipeline::step` in Rapier, for the engine that drives it) but not
+part of the game-facing API. Everything else is the engine's. Games
 depend on `engine` alone, a facade like the `bevy` crate: it re-exports
 the physics content types, and its public API is a short, curated list
 in `engine/src/lib.rs`.

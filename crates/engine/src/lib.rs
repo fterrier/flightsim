@@ -36,11 +36,13 @@ pub use engine::Game;
 pub use input::{Command, InputEvent, Key};
 pub use render::{Color, Shape, Visual};
 pub use scene::{Scene, SceneObject};
+pub use simulation::WorldView;
 
 // The engine is the games' single dependency: the physics crate is an
 // engine detail, its content types are re-exported here (the `bevy` crate
-// does the same for `bevy_ecs`, `bevy_render`...).
-pub use physics::{Body, Circle, DVec2, Motion, STANDARD_GRAVITY, World};
+// does the same for `bevy_ecs`, `bevy_render`...). Not `World`: games see
+// it through `WorldView`, without the machinery (`World::step`).
+pub use physics::{Body, Circle, DVec2, Motion, STANDARD_GRAVITY};
 
 // For platforms: the engine they run, and the interface they implement to
 // draw with a graphics library.

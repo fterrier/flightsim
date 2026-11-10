@@ -9,7 +9,21 @@
 //! reset it on restart (a restart is simply a new `Simulation`).
 
 use crate::timestep::FixedTimestep;
-use physics::{DVec2, World};
+use physics::{Body, DVec2, World};
+
+/// What a game can see of the world: its data, read-only, and none of the
+/// machinery. Cheap to pass by value: 24 bytes, a *borrow* of the world's
+/// bodies (pointer + length), never a copy of them. The physics `World` itself (with `step`) stays inside the
+/// engine: as in Godot or Unreal, physics advances on the engine's tick,
+/// and gameplay code reads state, it doesn't step the simulation.
+#[derive(Clone, Copy, Debug)]
+pub struct WorldView<'a> {
+    /// Simulated time since the start, in seconds.
+    pub time: f64,
+    /// All simulated objects, in scene order. A shared slice: it can be
+    /// read, not changed.
+    pub bodies: &'a [Body],
+}
 
 pub(crate) struct Simulation {
     world: World,
@@ -74,6 +88,14 @@ impl Simulation {
     pub(crate) fn drawn_position(&self, index: usize) -> DVec2 {
         let current = self.world.bodies[index].motion.position;
         self.previous[index].lerp(current, self.clock.alpha())
+    }
+
+    /// The world's data, read-only, for games.
+    pub(crate) fn view(&self) -> WorldView<'_> {
+        WorldView {
+            time: self.world.time(),
+            bodies: &self.world.bodies,
+        }
     }
 
     pub(crate) fn world(&self) -> &World {
@@ -146,6 +168,28 @@ mod tests {
         assert_eq!(drawn_x(&sim), [1.25]);
         assert_eq!(sim.advance(0.5 * DT), 0); // no step, just further along
         assert_eq!(drawn_x(&sim), [1.75]);
+    }
+
+    #[test]
+    fn the_view_shows_the_world_data_read_only() {
+        let mut sim = one_ball();
+        sim.advance(2.0 * DT);
+        let view = sim.view();
+        assert_eq!(view.time, sim.world().time());
+        assert_eq!(view.bodies, sim.world().bodies.as_slice());
+    }
+
+    #[test]
+    fn the_view_copies_no_body_data() {
+        // 24 bytes whatever the number of bodies: the time, plus a pointer
+        // and a length into the world's own array (checked at compile time).
+        const { assert!(std::mem::size_of::<WorldView<'_>>() == 24) }
+        // And that pointer is the world's memory itself, not a copy.
+        let sim = one_ball();
+        assert!(std::ptr::eq(
+            sim.view().bodies,
+            sim.world().bodies.as_slice()
+        ));
     }
 
     #[test]

@@ -106,7 +106,7 @@ screen.
 - **Physics is pure**: the `physics` crate has no clock, I/O, input devices
   or graphics. Time enters only as a `dt` argument.
 - **Physics is ECS-agnostic**: physics functions take components
-  (`&mut Body`), never a `World` or ECS query (see ROADMAP "Entities").
+  (`&mut Motion`, `&Circle`), never a `World` or ECS query (see ROADMAP "Entities").
 - **SI units** (m, s, kg, rad), `f64` in physics. Name units in doc
   comments. Convert to pixels / `f32` only at the drawing boundary.
 - No `unwrap()`/`expect()` in library code paths that can fail at runtime;
@@ -128,8 +128,9 @@ screen.
 - **Least visibility**: private by default; `pub(crate)` when another
   module of the crate needs it; `pub` only for real public API. The
   `unreachable_pub` lint (workspace-wide) rejects a `pub` that other crates
-  can't reach. Games get *data* (`&World`), never engine machinery
-  (`Simulation`, `Renderer`, `Camera`).
+  can't reach. Games get *data* (`WorldView`: a read-only borrow of the
+  world, no copy), never engine machinery (`World::step`, `Simulation`,
+  `Renderer`, `Camera`).
 
 ## Git
 

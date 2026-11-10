@@ -19,8 +19,7 @@ use crate::hud::{FrameStats, Hud};
 use crate::input::{Command, InputEvent};
 use crate::render::{RenderBackend, Renderer, viewport};
 use crate::scene::Scene;
-use crate::simulation::Simulation;
-use physics::World;
+use crate::simulation::{Simulation, WorldView};
 
 /// What a game provides to the engine.
 // TODO(step-06): a per-physics-step hook for game logic (mission rules, an
@@ -39,10 +38,10 @@ pub trait Game {
     fn command_for(&self, event: InputEvent) -> Option<Command>;
 
     /// The game's own HUD lines, written under the engine's diagnostics.
-    /// The game gets read-only access to the world's *data* (bodies, time),
-    /// never to the simulation machinery. `focus` is the index of the
-    /// object the camera follows.
-    fn write_hud(&self, world: &World, focus: usize, out: &mut String) -> fmt::Result;
+    /// The game gets a read-only view of the world's *data* (bodies, time),
+    /// never the simulation machinery. `focus` is the index of the object
+    /// the camera follows.
+    fn write_hud(&self, world: WorldView<'_>, focus: usize, out: &mut String) -> fmt::Result;
 }
 
 /// Whether the game loop should keep going.
@@ -208,7 +207,7 @@ impl<G: Game> Engine<G> {
             self.camera.mode.name(),
             self.lag.name(),
         )
-        .and_then(|()| self.game.write_hud(self.sim.world(), self.scene.focus, out))
+        .and_then(|()| self.game.write_hud(self.sim.view(), self.scene.focus, out))
     }
 }
 
@@ -268,7 +267,7 @@ pub(crate) mod testing {
             }
         }
 
-        fn write_hud(&self, world: &World, focus: usize, out: &mut String) -> fmt::Result {
+        fn write_hud(&self, world: WorldView<'_>, focus: usize, out: &mut String) -> fmt::Result {
             let x = world.bodies[focus].motion.position.x;
             write!(out, "test game: focus at x = {x:.1} m")
         }

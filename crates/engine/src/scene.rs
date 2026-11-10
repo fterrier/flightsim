@@ -36,7 +36,7 @@ pub struct Scene {
 
 impl Scene {
     /// The physics side of the scene: one body per object, in order.
-    pub fn world(&self) -> World {
+    pub(crate) fn world(&self) -> World {
         let bodies = self.objects.iter().map(|object| object.body).collect();
         World::new(bodies, self.gravity)
     }

@@ -8,7 +8,8 @@
 //!
 //! Coordinates (2D steps): x points right, y points up, origin on the ground.
 
-/// Re-exported so the app uses exactly the same vector type as the physics.
+/// Re-exported so the engine (and, through it, games) use exactly the same
+/// vector type as the physics.
 pub use glam::DVec2;
 
 /// Standard gravity at the Earth's surface, in m/s², pointing down: the
@@ -95,7 +96,7 @@ impl World {
     /// Advances the whole simulation by exactly `dt` seconds.
     ///
     /// Callers must always pass the same `dt` (the fixed timestep), see
-    /// `FixedTimestep` in the app.
+    /// `FixedTimestep` in the engine.
     // TODO(step-06): take the pilot's controls (throttle, pitch) as an
     // argument here; physics reads them but never polls a keyboard.
     pub fn step(&mut self, dt: f64) {

@@ -3,7 +3,7 @@
 
 use std::fmt::{self, Write};
 
-use engine::{Command, Game, InputEvent, Key, Scene, World};
+use engine::{Command, Game, InputEvent, Key, Scene, WorldView};
 
 use crate::scenarios;
 
@@ -31,7 +31,7 @@ impl Game for FlightSim {
         }
     }
 
-    fn write_hud(&self, world: &World, focus: usize, out: &mut String) -> fmt::Result {
+    fn write_hud(&self, world: WorldView<'_>, focus: usize, out: &mut String) -> fmt::Result {
         let body = &world.bodies[focus];
         let motion = &body.motion;
         write!(
@@ -52,7 +52,7 @@ impl Game for FlightSim {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::{Body, Circle, DVec2, Motion, STANDARD_GRAVITY};
+    use engine::{Body, Circle, DVec2, Motion};
 
     fn command(event: InputEvent) -> Option<Command> {
         FlightSim.command_for(event)
@@ -89,9 +89,13 @@ mod tests {
             },
             collider: Circle { radius: 0.4 },
         };
-        let world = World::new(vec![ball(1.0, 0.0), ball(42.0, -3.0)], STANDARD_GRAVITY);
+        let bodies = [ball(1.0, 0.0), ball(42.0, -3.0)];
+        let world = WorldView {
+            time: 0.0,
+            bodies: &bodies,
+        };
         let mut out = String::new();
-        FlightSim.write_hud(&world, 1, &mut out).unwrap();
+        FlightSim.write_hud(world, 1, &mut out).unwrap();
         assert!(out.contains("x = 42.0 m"), "{out}");
         assert!(out.contains("height = 2.0 m"), "{out}"); // bottom of the ball
         assert!(out.contains("vertical speed = -3.0 m/s"), "{out}");
