@@ -121,6 +121,9 @@ screen.
   must never know which game they run (no scenario, key binding or
   game-specific text in them). Game-specific code goes in `flightsim`,
   plugged in through the `engine::Game` trait.
+- **Curated public API**: `engine`'s modules are private; only what games
+  and platforms need is re-exported from its `lib.rs`. Expose something
+  new only when a game or platform genuinely needs it, and say why.
 
 ## Git
 

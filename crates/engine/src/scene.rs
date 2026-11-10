@@ -7,7 +7,7 @@
 //! its visual to the renderer. Object `i` becomes physics body `i` and
 //! render proxy `i`: that shared index is what links them.
 
-use physics::{Body, World};
+use physics::{Body, DVec2, World};
 
 use crate::render::{Color, Visual};
 
@@ -30,12 +30,15 @@ pub struct Scene {
     pub focus: usize,
     /// Sky colour, in linear light (see `render::Color`).
     pub background: Color,
+    /// The world's gravity, in m/s² (usually `physics::STANDARD_GRAVITY`).
+    pub gravity: DVec2,
 }
 
 impl Scene {
     /// The physics side of the scene: one body per object, in order.
     pub fn world(&self) -> World {
-        World::new(self.objects.iter().map(|object| object.body).collect())
+        let bodies = self.objects.iter().map(|object| object.body).collect();
+        World::new(bodies, self.gravity)
     }
 }
 
@@ -43,7 +46,7 @@ impl Scene {
 mod tests {
     use super::*;
     use crate::render::{Shape, WHITE};
-    use physics::{Circle, DVec2, Motion};
+    use physics::{Circle, Motion, STANDARD_GRAVITY};
 
     fn ball(x: f64) -> SceneObject {
         SceneObject {
@@ -67,7 +70,10 @@ mod tests {
             objects: vec![ball(1.0), ball(2.0)],
             focus: 0,
             background: WHITE,
+            gravity: STANDARD_GRAVITY,
         };
-        assert_eq!(scene.world().bodies, [ball(1.0).body, ball(2.0).body]);
+        let world = scene.world();
+        assert_eq!(world.bodies, [ball(1.0).body, ball(2.0).body]);
+        assert_eq!(world.gravity, STANDARD_GRAVITY);
     }
 }

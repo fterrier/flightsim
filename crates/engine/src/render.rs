@@ -75,8 +75,7 @@ pub struct Screen {
 }
 
 /// The few generic operations rendering needs from a graphics library.
-/// Positions are f32 world-space metres (GPUs work in f32); the HUD's text
-/// positions are in screen space (physical pixels, top-left, y down).
+/// World positions are f32 metres (GPUs work in f32).
 pub trait RenderBackend {
     fn screen(&self) -> Screen;
     fn set_background(&mut self, color: Color);
@@ -89,10 +88,13 @@ pub trait RenderBackend {
     fn create_proxy(&mut self, visual: &Visual) -> ProxyId;
     fn set_position(&mut self, proxy: ProxyId, position: Vec2);
 
-    /// Immediate debug drawing, re-issued every frame (Unreal's
-    /// `DrawDebugLine`, Bevy's gizmos).
-    fn line(&mut self, from: Vec2, to: Vec2, color: Color, width: f32);
-    fn text(&mut self, text: &str, at: Vec2, size: f32, color: Color);
+    /// Immediate drawing, re-issued every frame. Two coordinate spaces, as
+    /// in Unreal (`DrawDebugLine` in the world, `UCanvas::DrawText` on the
+    /// screen), named so every call says which one it uses:
+    /// a debug line in **world** space (metres), `width` in pixels...
+    fn world_line(&mut self, from: Vec2, to: Vec2, color: Color, width: f32);
+    /// ...and text in **screen** space (physical pixels, top-left, y down).
+    fn screen_text(&mut self, text: &str, at: Vec2, size: f32, color: Color);
 }
 
 /// Width of the ground and ruler lines, in physical pixels.
@@ -153,10 +155,10 @@ impl Renderer {
         let half_width = camera.visible_half_extents(viewport(screen)).x;
         let (from, to) = (look_at.x - half_width, look_at.x + half_width);
         let ground = |x: f64, y: f64| to_render(DVec2::new(x, y));
-        backend.line(ground(from, 0.0), ground(to, 0.0), GREY, LINE_WIDTH);
+        backend.world_line(ground(from, 0.0), ground(to, 0.0), GREY, LINE_WIDTH);
         for tick in ruler_ticks(from, to) {
             let (top, bottom) = (ground(tick.x, 0.0), ground(tick.x, -tick.length));
-            backend.line(top, bottom, GREY, LINE_WIDTH);
+            backend.world_line(top, bottom, GREY, LINE_WIDTH);
         }
     }
 }
@@ -256,10 +258,10 @@ pub mod fakes {
         fn set_position(&mut self, proxy: ProxyId, position: Vec2) {
             self.proxies[proxy.0].1 = Some(position);
         }
-        fn line(&mut self, from: Vec2, to: Vec2, _color: Color, _width: f32) {
+        fn world_line(&mut self, from: Vec2, to: Vec2, _color: Color, _width: f32) {
             self.lines.push((from, to));
         }
-        fn text(&mut self, text: &str, at: Vec2, size: f32, _color: Color) {
+        fn screen_text(&mut self, text: &str, at: Vec2, size: f32, _color: Color) {
             self.texts.push((text.to_owned(), at, size));
         }
     }
@@ -278,8 +280,8 @@ pub mod fakes {
             ProxyId(0)
         }
         fn set_position(&mut self, _proxy: ProxyId, _position: Vec2) {}
-        fn line(&mut self, _from: Vec2, _to: Vec2, _color: Color, _width: f32) {}
-        fn text(&mut self, _text: &str, _at: Vec2, _size: f32, _color: Color) {}
+        fn world_line(&mut self, _from: Vec2, _to: Vec2, _color: Color, _width: f32) {}
+        fn screen_text(&mut self, _text: &str, _at: Vec2, _size: f32, _color: Color) {}
     }
 }
 
@@ -289,7 +291,7 @@ mod tests {
     use super::*;
     use crate::camera;
     use crate::scene::SceneObject;
-    use physics::{Body, Circle, Motion};
+    use physics::{Body, Circle, Motion, STANDARD_GRAVITY};
 
     const BALL: Visual = Visual {
         shape: Shape::Circle { radius: 0.4 },
@@ -324,6 +326,7 @@ mod tests {
             objects: xs.iter().map(|&x| ball_at(x)).collect(),
             focus: 0,
             background: BACKGROUND,
+            gravity: STANDARD_GRAVITY,
         }
     }
 

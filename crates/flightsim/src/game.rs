@@ -3,10 +3,7 @@
 
 use std::fmt::{self, Write};
 
-use engine::Game;
-use engine::input::{Command, InputEvent, Key};
-use engine::scene::Scene;
-use engine::simulation::Simulation;
+use engine::{Command, Game, InputEvent, Key, Scene, Simulation};
 
 use crate::scenarios;
 
@@ -55,7 +52,7 @@ impl Game for FlightSim {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use physics::{Body, Circle, DVec2, Motion, World};
+    use physics::{Body, Circle, DVec2, Motion, STANDARD_GRAVITY, World};
 
     fn command(event: InputEvent) -> Option<Command> {
         FlightSim.command_for(event)
@@ -93,7 +90,7 @@ mod tests {
             collider: Circle { radius: 0.4 },
         };
         let sim = Simulation::new(
-            World::new(vec![ball(1.0, 0.0), ball(42.0, -3.0)]),
+            World::new(vec![ball(1.0, 0.0), ball(42.0, -3.0)], STANDARD_GRAVITY),
             1.0 / 120.0,
         );
         let mut out = String::new();

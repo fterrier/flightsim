@@ -1,9 +1,8 @@
 //! The game's scenarios: what exists in the world and what it looks like,
 //! as engine `Scene`s.
 
-use engine::render::{Color, Shape, Visual};
-use engine::scene::{Scene, SceneObject};
-use physics::{Body, Circle, DVec2, Motion};
+use engine::{Color, Scene, SceneObject, Shape, Visual};
+use physics::{Body, Circle, DVec2, Motion, STANDARD_GRAVITY};
 
 /// Three balls resting on the ground, thrown at once: a small fast one, a
 /// high one (followed by the camera) and a big flat one. They pass through
@@ -19,6 +18,7 @@ pub fn ball_throws() -> Scene {
         focus: 1,
         // Linear light: tiny values for a dark night blue.
         background: Color::rgb(0.006, 0.008, 0.015),
+        gravity: STANDARD_GRAVITY,
     }
 }
 

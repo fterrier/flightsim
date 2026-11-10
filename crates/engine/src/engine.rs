@@ -22,6 +22,8 @@ use crate::scene::Scene;
 use crate::simulation::Simulation;
 
 /// What a game provides to the engine.
+// TODO(step-06): a per-physics-step hook for game logic (mission rules, an
+// autopilot), like Unity's `FixedUpdate`, if commands aren't enough.
 pub trait Game {
     /// Seconds per physics step: the fixed timestep (e.g. 1/120). A game
     /// setting, like Godot's "physics ticks per second".
@@ -98,6 +100,9 @@ impl<G: Game> Engine<G> {
     /// Loads the game's scene and prepares the first frame (the platform
     /// shows one before the first `frame` call).
     pub fn new(backend: &mut impl RenderBackend, game: G) -> Self {
+        // TODO(step-09): once scenes come from files, validate them here
+        // (at least one object, `focus` in range) and report a clear error
+        // instead of panicking on an index.
         let scene = game.scene();
         let sim = Simulation::new(scene.world(), game.physics_dt());
         let start = scene.objects[scene.focus].body.motion.position;
@@ -210,7 +215,7 @@ pub mod testing {
     use crate::input::Key;
     use crate::render::{Color, Shape, Visual, WHITE};
     use crate::scene::SceneObject;
-    use physics::{Body, Circle, DVec2, Motion};
+    use physics::{Body, Circle, DVec2, Motion, STANDARD_GRAVITY};
 
     pub struct TestGame {
         /// Where the balls start (x, metres) and how fast they slide (m/s).
@@ -242,6 +247,7 @@ pub mod testing {
                 objects: self.balls.iter().map(ball).collect(),
                 focus: self.focus,
                 background: Color::rgb(0.0, 0.0, 0.0),
+                gravity: STANDARD_GRAVITY,
             }
         }
 

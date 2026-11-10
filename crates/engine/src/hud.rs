@@ -95,7 +95,7 @@ impl Hud {
         let scale = backend.screen().scale;
         for (i, line) in self.lines().enumerate() {
             let (x, y) = line_position(i, scale);
-            backend.text(line, Vec2::new(x, y), font_size(scale), WHITE);
+            backend.screen_text(line, Vec2::new(x, y), font_size(scale), WHITE);
         }
     }
 }

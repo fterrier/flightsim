@@ -11,11 +11,13 @@
 /// Re-exported so the app uses exactly the same vector type as the physics.
 pub use glam::DVec2;
 
-/// Standard gravity at the Earth's surface, in m/s², pointing down.
+/// Standard gravity at the Earth's surface, in m/s², pointing down: the
+/// usual value for a [`World`]'s `gravity`.
 ///
 /// It's an *acceleration*, the same for every body whatever its mass
 /// (Galileo), so a falling ball needs no mass yet.
-pub const GRAVITY: DVec2 = DVec2::new(0.0, -9.80665);
+// TODO(step-04): in NED axes (z down) it points along +z.
+pub const STANDARD_GRAVITY: DVec2 = DVec2::new(0.0, -9.80665);
 
 /// How something moves: where it is and how fast it goes.
 ///
@@ -67,14 +69,22 @@ pub struct World {
     // in a `u64` (exact) and derive time as steps × dt, instead of summing
     // a float that slowly accumulates rounding error.
     time: f64,
+    /// Acceleration applied to every body, in m/s². A setting of the world,
+    /// as in Rapier (`gravity` passed to each step) or Box2D (`b2WorldDef`):
+    /// the engine assumes no particular planet, nor which way is down.
+    pub gravity: DVec2,
     /// All simulated objects, stored contiguously. Their index identifies
     /// them (the renderer's proxy `i` shows body `i`).
     pub bodies: Vec<Body>,
 }
 
 impl World {
-    pub fn new(bodies: Vec<Body>) -> Self {
-        Self { time: 0.0, bodies }
+    pub fn new(bodies: Vec<Body>, gravity: DVec2) -> Self {
+        Self {
+            time: 0.0,
+            gravity,
+            bodies,
+        }
     }
 
     /// Simulated time since the start, in seconds.
@@ -93,7 +103,7 @@ impl World {
         // needs.
         for body in &mut self.bodies {
             // TODO(step-06): add aerodynamic forces (lift, drag) and thrust.
-            integrate(&mut body.motion, GRAVITY, dt);
+            integrate(&mut body.motion, self.gravity, dt);
             ground_contact(&mut body.motion, &body.collider);
         }
         self.time += dt;
@@ -143,7 +153,7 @@ mod tests {
     const RADIUS: f64 = 0.4;
     const BALL: Circle = Circle { radius: RADIUS };
     /// g, as a positive number, in m/s².
-    const G: f64 = -GRAVITY.y;
+    const G: f64 = -STANDARD_GRAVITY.y;
 
     /// 20 m up, thrown sideways at 5 m/s.
     fn thrown() -> Motion {
@@ -176,14 +186,14 @@ mod tests {
     fn fly(mut motion: Motion, seconds: f64, dt: f64) -> Motion {
         let steps = (seconds / dt).round() as u32;
         for _ in 0..steps {
-            integrate(&mut motion, GRAVITY, dt);
+            integrate(&mut motion, STANDARD_GRAVITY, dt);
         }
         motion
     }
 
     #[test]
     fn gravity_points_down_with_standard_value() {
-        assert_eq!(GRAVITY, DVec2::new(0.0, -9.80665));
+        assert_eq!(STANDARD_GRAVITY, DVec2::new(0.0, -9.80665));
     }
 
     #[test]
@@ -259,8 +269,28 @@ mod tests {
     }
 
     #[test]
+    fn gravity_is_a_setting_of_the_world() {
+        // Rapier and Box2D make gravity a world parameter too: the engine
+        // assumes no planet. Without gravity, a thrown ball flies straight.
+        let mut world = World::new(vec![thrown_ball()], DVec2::ZERO);
+        for _ in 0..120 {
+            world.step(DT);
+        }
+        assert_eq!(world.bodies[0].motion.velocity, DVec2::new(5.0, 0.0));
+        assert!((world.bodies[0].motion.position - DVec2::new(5.0, 20.0)).length() < 1e-9);
+
+        // Gravity can point anywhere: sideways, it bends the path sideways.
+        world.gravity = DVec2::new(-2.0, 0.0);
+        world.step(1.0);
+        assert_eq!(world.bodies[0].motion.velocity, DVec2::new(3.0, 0.0));
+    }
+
+    #[test]
     fn world_starts_at_time_zero_with_its_bodies() {
-        let world = World::new(vec![thrown_ball(), resting_ball(5.0, 1.0)]);
+        let world = World::new(
+            vec![thrown_ball(), resting_ball(5.0, 1.0)],
+            STANDARD_GRAVITY,
+        );
         assert_eq!(world.time(), 0.0);
         assert_eq!(world.bodies, [thrown_ball(), resting_ball(5.0, 1.0)]);
     }
@@ -269,7 +299,7 @@ mod tests {
     fn ball_lands_at_the_free_fall_time_and_stays_on_the_ground() {
         // Its centre falls h = 20 m - radius, which takes t = sqrt(2h/g).
         let impact = (2.0 * (20.0 - RADIUS) / G).sqrt();
-        let mut world = World::new(vec![thrown_ball()]);
+        let mut world = World::new(vec![thrown_ball()], STANDARD_GRAVITY);
         let height = |world: &World| world.bodies[0].motion.position.y;
 
         while world.time() < impact - 2.0 * DT {
@@ -291,7 +321,10 @@ mod tests {
 
     #[test]
     fn every_body_is_simulated_with_its_own_collider() {
-        let mut world = World::new(vec![thrown_ball(), resting_ball(5.0, 1.0)]);
+        let mut world = World::new(
+            vec![thrown_ball(), resting_ball(5.0, 1.0)],
+            STANDARD_GRAVITY,
+        );
         for _ in 0..120 {
             world.step(DT);
         }
@@ -306,8 +339,8 @@ mod tests {
         // Two worlds fed the same steps must be bit-identical (assert_eq!,
         // not a tolerance). Replays in step 10 rely on this.
         let bodies = vec![thrown_ball(), resting_ball(5.0, 1.0)];
-        let mut a = World::new(bodies.clone());
-        let mut b = World::new(bodies);
+        let mut a = World::new(bodies.clone(), STANDARD_GRAVITY);
+        let mut b = World::new(bodies, STANDARD_GRAVITY);
         for _ in 0..1000 {
             a.step(DT);
             b.step(DT);

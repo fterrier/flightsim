@@ -12,9 +12,9 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 
-use engine::input::{InputEvent, Key};
-use engine::render::{Color, ProxyId, RenderBackend, Screen, Shape, Visual};
-use engine::{Engine, Flow, Game};
+use engine::{
+    Color, Engine, Flow, Game, InputEvent, Key, ProxyId, RenderBackend, Screen, Shape, Visual,
+};
 use glam::Vec2;
 use kiss3d::camera::PanZoomCamera2d;
 use kiss3d::color::Color as Kiss3dColor;
@@ -65,7 +65,8 @@ async fn run_async(title: &str, game: impl Game) {
     }
 }
 
-pub struct Kiss3dBackend {
+/// `RenderBackend` with kiss3d. Private: the crate's only API is `run`.
+struct Kiss3dBackend {
     window: Window,
     /// Objects kiss3d keeps between frames (retained mode).
     scene: SceneNode2d,
@@ -80,7 +81,7 @@ pub struct Kiss3dBackend {
 impl Kiss3dBackend {
     /// Opens the OS window and sets up the GPU (wgpu: Metal on macOS,
     /// Vulkan/DX12 elsewhere).
-    pub async fn new(title: &str, width: u32, height: u32) -> Self {
+    async fn new(title: &str, width: u32, height: u32) -> Self {
         let window = Window::new_with_size(title, width, height).await;
         // Our `Camera` steers and zooms: turn off kiss3d's own mouse
         // handling (drag to pan; a zoom step of 1 makes the wheel a no-op).
@@ -98,7 +99,7 @@ impl Kiss3dBackend {
 
     /// Draws the frame prepared since the last call and processes OS events
     /// (keys, mouse wheel, resize). Returns `false` once the window closes.
-    pub async fn present(&mut self) -> bool {
+    async fn present(&mut self) -> bool {
         self.window
             .render_2d(&mut self.scene, &mut self.camera)
             .await
@@ -136,13 +137,13 @@ impl RenderBackend for Kiss3dBackend {
         self.proxies[proxy.0].set_position(kiss3d_vec(position));
     }
 
-    fn line(&mut self, from: Vec2, to: Vec2, color: Color, width: f32) {
+    fn world_line(&mut self, from: Vec2, to: Vec2, color: Color, width: f32) {
         let (from, to) = (kiss3d_vec(from), kiss3d_vec(to));
         self.window
             .draw_line_2d(from, to, kiss3d_color(color), width);
     }
 
-    fn text(&mut self, text: &str, at: Vec2, size: f32, color: Color) {
+    fn screen_text(&mut self, text: &str, at: Vec2, size: f32, color: Color) {
         let color = kiss3d_color(color);
         self.window
             .draw_text(text, kiss3d_vec(at), size, &self.font, color);
