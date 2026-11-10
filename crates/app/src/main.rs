@@ -26,6 +26,7 @@ use kiss3d::text::Font;
 use kiss3d::window::Window;
 use physics::{Body, DVec2, World};
 use timestep::FixedTimestep;
+use view::RenderState;
 
 /// Physics runs at this fixed rate, whatever the display's frame rate.
 const PHYSICS_HZ: f64 = 120.0;
@@ -78,8 +79,9 @@ async fn main() {
     let scale = window.scale_factor() as f32;
 
     let (mut world, mut clock) = new_run();
-    // The state before the latest physics step, for interpolation.
-    let mut previous = world.clone();
+    // What was drawn-relevant before the latest physics step, for
+    // interpolation (positions only, not a copy of the world).
+    let mut previous = RenderState::capture(&world);
 
     // Two cameras with separate jobs:
     // - `follow` (ours, tested) decides *where to look*: it glides after
@@ -118,7 +120,8 @@ async fn main() {
         }
         if window.get_key(Key::R) == Action::Press {
             (world, clock) = new_run();
-            previous = world.clone();
+            // A teleport: don't blend from where the ball was before.
+            previous = RenderState::capture(&world);
         }
         // Key *presses* (events), not "is the key down": holding C must
         // switch once, not every frame.
@@ -144,21 +147,21 @@ async fn main() {
         // sometimes 0 or 1.
         let steps = clock.advance(frame_time);
         for _ in 0..steps {
-            previous = world.clone(); // keep the state before this step
+            previous = RenderState::capture(&world); // before this step
             world.step(clock.dt());
         }
 
         // 4. What to draw: a blend of the last two physics states, `alpha`
         // of the way between them. Smooth even when frames get 0, 1 or 2
         // physics steps.
-        let drawn = view::interpolate(previous.ball.position, world.ball.position, clock.alpha());
+        let drawn = previous.interpolate(&RenderState::capture(&world), clock.alpha());
 
         // 5. The camera glides towards what's drawn (in real frame time).
         let half_height = view::visible_half_height(window.height() as f32, camera.zoom());
-        follow.update(drawn, frame_time, half_height);
+        follow.update(drawn.ball, frame_time, half_height);
 
         // 6. Physics -> scene (see `sync_scene` below).
-        sync_scene(drawn, &follow, &mut ball, &mut camera);
+        sync_scene(&drawn, &follow, &mut ball, &mut camera);
 
         // 7. Debug drawing and HUD (immediate mode: re-issued every frame).
         draw_ruler(&mut window, &camera);
@@ -179,13 +182,13 @@ async fn main() {
 //
 //  The only place where simulation state flows into graphics. Physics never
 //  knows the scene exists; once per frame we copy what it computed (here
-//  already interpolated: `drawn_ball`) into the render proxies, and where
+//  already interpolated: `drawn`) into the render proxies, and where
 //  to look into kiss3d's camera. Everything after this only *reads*.
 //
 //  In 3D it stays the same: body position + orientation -> 3D scene node.
 // ═══════════════════════════════════════════════════════════════════════
 fn sync_scene(
-    drawn_ball: DVec2,
+    drawn: &RenderState,
     follow: &FollowCamera,
     ball: &mut SceneNode2d,
     camera: &mut PanZoomCamera2d,
@@ -197,7 +200,7 @@ fn sync_scene(
     // *before* converting, so the GPU only sees small numbers.
     // TODO(step-04): physics moves to 3D NED axes (z down); convert to
     // kiss3d's y-up axes here, and only here.
-    ball.set_position(Vec2::new(drawn_ball.x as f32, drawn_ball.y as f32));
+    ball.set_position(Vec2::new(drawn.ball.x as f32, drawn.ball.y as f32));
 
     let at = follow.position;
     camera.set_at(Vec2::new(at.x as f32, at.y as f32));

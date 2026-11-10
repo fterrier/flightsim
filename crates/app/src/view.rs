@@ -38,15 +38,45 @@ pub fn clamp_zoom(zoom: f32, scale: f32) -> f32 {
     zoom.clamp(MIN_ZOOM * scale, MAX_ZOOM * scale)
 }
 
-/// The position to draw, `alpha` of the way (0 to 1) from the `previous`
-/// physics position to the `current` one.
+/// The part of a physics state that rendering needs: only what is drawn.
 ///
-/// Trade-off: what you see is always up to one physics step (8 ms at
-/// 120 Hz) behind the simulation. Smooth beats a few milliseconds here;
-/// the alternative, *extrapolating* ahead, overshoots whenever something
-/// changes direction (like the ball landing).
-pub fn interpolate(previous: DVec2, current: DVec2, alpha: f64) -> DVec2 {
-    previous.lerp(current, alpha)
+/// Used for interpolation. Before each physics step the game loop captures
+/// one of these, so the renderer can draw *between* the previous and the
+/// current state. Engines do the same, keeping the previous transform of
+/// each interpolated object only (Bevy's `PreviousPhysicalTranslation`,
+/// Godot's per-object previous transform, Unity's Rigidbody
+/// interpolation), not a copy of the whole world: velocities, masses or
+/// sim time aren't drawn, so they aren't copied. It's 16 bytes, on the
+/// stack, never a heap allocation.
+// TODO(step-04): positions become `DVec3`.
+// TODO(step-08): add orientations (quaternions), blended with `slerp`.
+// TODO(step-11): one entry per *moving* entity, in a contiguous array;
+// static objects (buildings) need none.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RenderState {
+    /// Ball centre, in metres.
+    pub ball: DVec2,
+}
+
+impl RenderState {
+    pub fn capture(world: &World) -> Self {
+        Self {
+            ball: world.ball.position,
+        }
+    }
+
+    /// The state to draw, `alpha` of the way (0 to 1) from `self` (the
+    /// previous state) to `current`.
+    ///
+    /// Trade-off: what you see is always up to one physics step (8 ms at
+    /// 120 Hz) behind the simulation. Smooth beats a few milliseconds here;
+    /// the alternative, *extrapolating* ahead, overshoots whenever something
+    /// changes direction (like the ball landing).
+    pub fn interpolate(&self, current: &Self, alpha: f64) -> Self {
+        Self {
+            ball: self.ball.lerp(current.ball, alpha),
+        }
+    }
 }
 
 /// The world x range visible on screen, in metres, for a camera centred on
@@ -141,12 +171,38 @@ mod tests {
     use physics::Body;
 
     #[test]
-    fn interpolation_blends_the_last_two_physics_positions() {
-        let previous = DVec2::new(0.0, 10.0);
-        let current = DVec2::new(4.0, 6.0);
-        assert_eq!(interpolate(previous, current, 0.0), previous);
-        assert_eq!(interpolate(previous, current, 0.25), DVec2::new(1.0, 9.0));
-        assert_eq!(interpolate(previous, current, 1.0), current);
+    fn render_state_captures_only_what_is_drawn() {
+        // The doc comment promises 16 bytes; checked at compile time.
+        const { assert!(std::mem::size_of::<RenderState>() == 16) }
+        let world = World::new(
+            Body {
+                position: DVec2::new(3.0, 4.0),
+                velocity: DVec2::new(5.0, 6.0),
+            },
+            0.4,
+        );
+        assert_eq!(
+            RenderState::capture(&world),
+            RenderState {
+                ball: DVec2::new(3.0, 4.0)
+            }
+        );
+    }
+
+    #[test]
+    fn interpolation_blends_the_last_two_physics_states() {
+        let previous = RenderState {
+            ball: DVec2::new(0.0, 10.0),
+        };
+        let current = RenderState {
+            ball: DVec2::new(4.0, 6.0),
+        };
+        assert_eq!(previous.interpolate(&current, 0.0), previous);
+        assert_eq!(
+            previous.interpolate(&current, 0.25).ball,
+            DVec2::new(1.0, 9.0)
+        );
+        assert_eq!(previous.interpolate(&current, 1.0), current);
     }
 
     #[test]

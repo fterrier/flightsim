@@ -75,7 +75,13 @@ Physics advances in fixed steps (e.g. 1/120 s) regardless of frame rate;
 rendering happens once per frame. Real frame time is accumulated and
 consumed in whole steps; frame time is capped so a stall (debugger, window
 drag) doesn't trigger an endless catch-up ("spiral of death"). From
-step 3, rendering interpolates between the last two physics states.
+step 3, rendering interpolates between the last two physics states,
+storing only the previous *transform* of each moving object before each
+step (`RenderState`), as engines do (Bevy's `PreviousPhysicalTranslation`,
+Godot and Unity physics interpolation), not a copy of the whole world.
+The camera follows the *interpolated* position, in real frame time
+(Godot's documented approach). Cost: what you see lags the simulation by
+up to one physics step.
 This makes the simulation deterministic: same inputs, same flight.
 Reference: Glenn Fiedler, *Fix Your Timestep!*
 
@@ -196,6 +202,11 @@ readability. At step 11, when entities multiply:
 - [JSBSim](https://github.com/JSBSim-Team/jsbsim) and its `aircraft/c152`:
   a real flight dynamics model to compare against
 - Glenn Fiedler, [Fix Your Timestep!](https://gafferongames.com/post/fix_your_timestep/)
+- Physics interpolation in engines:
+  [Godot](https://docs.godotengine.org/en/stable/tutorials/physics/interpolation/physics_interpolation_introduction.html)
+  (and its [camera advice](https://docs.godotengine.org/en/stable/tutorials/physics/interpolation/advanced_physics_interpolation.html)),
+  [Unity](https://docs.unity3d.com/Manual/rigidbody-interpolation.html),
+  [Bevy's fixed-timestep example](https://bevy.org/examples/movement/physics-in-fixed-timestep/)
 - Robert Nystrom, [Game Programming Patterns](https://gameprogrammingpatterns.com/)
   (Game Loop, Component, Data Locality chapters)
 - Mike Acton, [Data-Oriented Design and C++](https://www.youtube.com/watch?v=rX0ItVEVjHc)
