@@ -46,9 +46,9 @@ const STALLED_FRAME: Duration = Duration::from_millis(400);
 // the same code can run in a browser, where the browser owns the loop.
 #[kiss3d::main]
 async fn main() {
-    let scenario = scenario::ball_throw();
+    let scenario = scenario::ball_throws();
     let mut backend = Kiss3dBackend::new("flightsim", 1280, 720, scenario.background).await;
-    let mut sim = Simulation::new(scenario.world.clone(), PHYSICS_DT);
+    let mut sim = Simulation::new(scenario.world(), PHYSICS_DT);
     let mut renderer = Renderer::new(&mut backend, &scenario);
     let mut last_frame: Option<Instant> = None;
 
@@ -72,7 +72,7 @@ async fn main() {
                 WindowEvent::Key(Key::Escape, Action::Press, _) => return,
                 // Restart = reload the scenario into a fresh simulation.
                 WindowEvent::Key(Key::R, Action::Press, _) => {
-                    sim = Simulation::new(scenario.world.clone(), PHYSICS_DT);
+                    sim = Simulation::new(scenario.world(), PHYSICS_DT);
                 }
                 WindowEvent::Key(Key::C, Action::Press, _) => renderer.toggle_camera(),
                 _ => {}

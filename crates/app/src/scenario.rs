@@ -1,48 +1,76 @@
 //! The scenario: what exists in the world and what it looks like, defined
 //! in one place. Engines call this a scene or a level (Godot's `.tscn`,
-//! Unity scenes, Unreal levels): content described as data, then handed to
-//! the simulation (bodies, colliders) and to the renderer (visuals). The
-//! game loop only loads it; it never needs to know what's inside.
+//! Unity scenes and prefabs, Unreal levels): each object is described
+//! *whole*, physics and looks together. Loading splits it: the bodies go to
+//! the simulation (`world()`), the visuals to the renderer. The game loop
+//! never needs to know what's inside.
 
-use physics::{Body, Circle, DVec2, World};
+use physics::{Body, Circle, DVec2, Motion, World};
 
 use crate::render::{Color, Shape, Visual};
 
+/// One object of the scenario: everything about it, in one place.
+// TODO(step-11): becomes an ECS "bundle": the group of components an
+// entity is spawned with.
+pub struct SceneObject {
+    /// How it moves and what it collides with: for the simulation.
+    pub body: Body,
+    /// What it looks like: for the renderer.
+    pub visual: Visual,
+}
+
 pub struct Scenario {
-    /// Initial physics state: bodies and their colliders.
-    pub world: World,
-    /// What the ball looks like.
-    // TODO(step-11): a `Visual` per entity, stored next to its body and
-    // collider (an ECS component).
-    pub ball_visual: Visual,
+    /// The objects, in order: object `i` becomes physics body `i` and
+    /// render proxy `i`. That shared index is what links them.
+    pub objects: Vec<SceneObject>,
+    /// Index of the object the camera and HUD follow.
+    pub focus: usize,
     /// Sky colour, in linear light (see `render::Color`).
     pub background: Color,
 }
 
-const BALL_RADIUS: f64 = 0.4;
+impl Scenario {
+    /// The physics side of the scenario: one body per object.
+    pub fn world(&self) -> World {
+        World::new(self.objects.iter().map(|object| object.body).collect())
+    }
+}
 
-/// A ball resting on the ground, thrown up and forward (m/s): it climbs
-/// ~20 m and lands ~33 m away.
+/// Three balls resting on the ground, thrown at once: a small fast one, a
+/// high one (followed by the camera) and a big flat one. They pass through
+/// each other: collisions between objects come in step 12.
 // TODO(step-09): scenarios become data files, like the aircraft.
-pub fn ball_throw() -> Scenario {
-    let ball = Body {
-        position: DVec2::new(0.0, BALL_RADIUS),
-        velocity: DVec2::new(8.0, 20.0),
-    };
-    let collider = Circle {
-        radius: BALL_RADIUS,
-    };
+pub fn ball_throws() -> Scenario {
     Scenario {
-        world: World::new(ball, collider),
-        // Same size as the collider: what you see is what collides.
-        ball_visual: Visual {
-            shape: Shape::Circle {
-                radius: BALL_RADIUS as f32,
-            },
-            color: Color::rgb(1.0, 0.25, 0.0),
-        },
+        objects: vec![
+            ball(-3.0, 0.3, DVec2::new(6.0, 14.0), Color::rgb(0.1, 0.6, 1.0)),
+            ball(0.0, 0.4, DVec2::new(8.0, 20.0), Color::rgb(1.0, 0.25, 0.0)),
+            ball(3.0, 0.6, DVec2::new(10.0, 9.0), Color::rgb(1.0, 0.8, 0.1)),
+        ],
+        focus: 1,
         // Linear light: tiny values for a dark night blue.
         background: Color::rgb(0.006, 0.008, 0.015),
+    }
+}
+
+/// A ball of `radius` (metres) resting on the ground at `x`, thrown with
+/// `velocity` (m/s). Its visual has the collider's size: what you see is
+/// what collides.
+fn ball(x: f64, radius: f64, velocity: DVec2, color: Color) -> SceneObject {
+    SceneObject {
+        body: Body {
+            motion: Motion {
+                position: DVec2::new(x, radius),
+                velocity,
+            },
+            collider: Circle { radius },
+        },
+        visual: Visual {
+            shape: Shape::Circle {
+                radius: radius as f32,
+            },
+            color,
+        },
     }
 }
 
@@ -51,20 +79,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_ball_starts_resting_on_the_ground() {
-        let scenario = ball_throw();
-        let ball = &scenario.world.ball;
-        assert_eq!(ball.position.y, scenario.world.ball_shape.radius);
-        assert!(ball.velocity.y > 0.0, "thrown upwards");
+    fn every_object_starts_resting_on_the_ground() {
+        for object in ball_throws().objects {
+            let body = object.body;
+            assert_eq!(body.motion.position.y, body.collider.radius);
+        }
     }
 
     #[test]
     fn what_you_see_is_what_collides() {
-        // The drawn circle has the collider's size, at render precision:
+        // Each drawn circle has its collider's size, at render precision:
         // 0.4 isn't exact in binary, so f64 0.4 -> f32 -> f64 gives
         // 0.4000000059..., not 0.4. Compare in f32, what the GPU gets.
-        let scenario = ball_throw();
-        let Shape::Circle { radius } = scenario.ball_visual.shape;
-        assert_eq!(radius, scenario.world.ball_shape.radius as f32);
+        for object in ball_throws().objects {
+            let Shape::Circle { radius } = object.visual.shape;
+            assert_eq!(radius, object.body.collider.radius as f32);
+        }
+    }
+
+    #[test]
+    fn the_world_has_one_body_per_object_in_the_same_order() {
+        // The order is the link between a body and its render proxy.
+        let scenario = ball_throws();
+        let bodies: Vec<_> = scenario.objects.iter().map(|o| o.body).collect();
+        assert_eq!(scenario.world().bodies, bodies);
+    }
+
+    #[test]
+    fn the_camera_focuses_on_an_existing_object() {
+        let scenario = ball_throws();
+        assert!(scenario.focus < scenario.objects.len());
     }
 }

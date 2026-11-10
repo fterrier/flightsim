@@ -66,8 +66,8 @@ mod tests {
 
     #[test]
     fn a_steady_state_frame_allocates_nothing() {
-        let scenario = scenario::ball_throw();
-        let mut sim = Simulation::new(scenario.world.clone(), 1.0 / 120.0);
+        let scenario = scenario::ball_throws();
+        let mut sim = Simulation::new(scenario.world(), 1.0 / 120.0);
         // The renderer runs for real, against a backend that draws nothing.
         let mut backend = NullBackend(Screen {
             width: 2560.0,

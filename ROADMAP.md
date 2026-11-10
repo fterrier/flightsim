@@ -80,11 +80,13 @@ Rules:
    (scene nodes) for simulated objects; once per frame, one place copies
    the (interpolated) physics state into them: `Renderer::draw_frame`, in
    `render.rs`.
-6. **Content is data.** A scenario (a "level") defines what exists: each
-   object's body and collider for the simulation, and its `Visual` (shape
-   + colour, later a glTF mesh + material) for the renderer. The game loop
-   never knows what's inside, and the render interface has a few generic
-   operations that never grow with content: no `draw_plane`.
+6. **Content is data.** A scenario (a "level") lists objects, each
+   described whole: its `Body` (motion + collider) for the simulation and
+   its `Visual` (shape + colour, later a glTF mesh + material) for the
+   renderer. Loading splits them; object `i` becomes physics body `i` and
+   render proxy `i` (entity IDs replace the index at step 11). The game
+   loop never knows what's inside, and the render interface has a few
+   generic operations that never grow with content: no `draw_plane`.
 
 ## Decisions
 
@@ -96,7 +98,7 @@ consumed in whole steps; frame time is capped so a stall (debugger, window
 drag) doesn't trigger an endless catch-up ("spiral of death"). From
 step 3, rendering interpolates between the last two physics states,
 storing only the previous *transform* of each moving object before each
-step (`RenderState`), as engines do (Bevy's `PreviousPhysicalTranslation`,
+step (`Simulation::previous`, one contiguous array), as engines do (Bevy's `PreviousPhysicalTranslation`,
 Godot and Unity physics interpolation), not a copy of the whole world.
 The camera follows the *interpolated* position, in real frame time
 (Godot's documented approach). Cost: what you see lags the simulation by

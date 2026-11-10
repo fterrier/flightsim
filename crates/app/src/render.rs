@@ -103,12 +103,14 @@ const LINE_WIDTH: f32 = 2.0;
 /// camera looks, and the debug HUD. The game loop only hands it the
 /// simulation once per frame.
 pub struct Renderer {
-    /// The ball's render proxy.
-    // TODO(step-11): one proxy per entity that has a `Visual`: created
-    // when the entity spawns, freed when it despawns (like Godot's
-    // `free_rid`), all updated in a single loop in `draw_frame`.
-    ball: ProxyId,
-    /// Where to look: glides after the ball.
+    /// One render proxy per scenario object, in the same order as the
+    /// world's bodies: proxy `i` shows body `i`.
+    // TODO(step-11): keyed by entity ID instead of index; created when an
+    // entity spawns, freed when it despawns (like Godot's `free_rid`).
+    proxies: Vec<ProxyId>,
+    /// Index of the object the camera and HUD follow.
+    focus: usize,
+    /// Where to look: glides after the focused object.
     // TODO(step-05): 3D chase and orbit cameras.
     camera: FollowCamera,
     hud: Hud,
@@ -120,18 +122,24 @@ impl Renderer {
     pub fn new(backend: &mut impl RenderBackend, scenario: &Scenario) -> Self {
         let scale = backend.screen().scale;
         backend.set_camera(Vec2::ZERO, view::initial_zoom(scale));
-        let start = scenario.world.ball.position;
+        let focus = scenario.focus;
+        let start = scenario.objects[focus].body.motion.position;
         let mut camera = FollowCamera::new(start);
         camera.snap_to(start, visible_half_height(backend));
         Self {
-            ball: backend.create_proxy(&scenario.ball_visual),
+            proxies: scenario
+                .objects
+                .iter()
+                .map(|object| backend.create_proxy(&object.visual))
+                .collect(),
+            focus,
             camera,
             hud: Hud::default(),
             stats: FrameStats::default(),
         }
     }
 
-    /// Switches the camera between following the ball and staying fixed.
+    /// Switches the camera between following and staying fixed.
     pub fn toggle_camera(&mut self) {
         self.camera.toggle_mode();
     }
@@ -147,12 +155,13 @@ impl Renderer {
         frame_time: f64,
     ) {
         self.stats.record(frame_time);
-        // What to show: between the last two physics states.
-        let drawn = sim.drawn();
-        // The camera glides towards it, in real frame time.
+        // The camera glides towards where the focused object is drawn
+        // (interpolated), in real frame time.
+        let target = sim.drawn_position(self.focus);
         self.camera
-            .update(drawn.ball, frame_time, visible_half_height(backend));
-        self.hud.update(sim, steps, &self.stats, self.camera.mode);
+            .update(target, frame_time, visible_half_height(backend));
+        self.hud
+            .update(sim, self.focus, steps, &self.stats, self.camera.mode);
 
         let screen = backend.screen();
         // The mouse wheel may have zoomed the camera; keep it in range.
@@ -165,10 +174,13 @@ impl Renderer {
         //
         //  The only place where simulation state flows into graphics.
         //  Physics never knows the scene exists; once per frame the drawn
-        //  (interpolated) state is copied into the render proxies. In 3D
-        //  it stays the same: position + orientation -> scene node.
+        //  (interpolated) positions are copied into the render proxies,
+        //  in one loop over all objects. In 3D it stays the same:
+        //  position + orientation -> scene node.
         // ═══════════════════════════════════════════════════════════════
-        backend.set_position(self.ball, to_render(drawn.ball));
+        for (proxy, position) in self.proxies.iter().zip(sim.drawn_positions()) {
+            backend.set_position(*proxy, to_render(position));
+        }
 
         // Ground line and distance ruler, in world space.
         let (from, to) = view::visible_x_range(look_at.x, screen.width, zoom);
@@ -288,7 +300,8 @@ pub mod fakes {
 mod tests {
     use super::fakes::RecordingBackend;
     use super::*;
-    use physics::{Body, Circle, World};
+    use crate::scenario::SceneObject;
+    use physics::{Body, Circle, Motion};
 
     const BALL: Visual = Visual {
         shape: Shape::Circle { radius: 0.4 },
@@ -306,21 +319,36 @@ mod tests {
 
     /// A ball resting on the ground at `x` metres: it doesn't move, so
     /// drawn positions are exact.
-    fn resting_at(x: f64) -> Scenario {
-        let ball = Body {
-            position: DVec2::new(x, 0.4),
-            velocity: DVec2::ZERO,
-        };
+    fn ball_at(x: f64) -> SceneObject {
+        SceneObject {
+            body: Body {
+                motion: Motion {
+                    position: DVec2::new(x, 0.4),
+                    velocity: DVec2::ZERO,
+                },
+                collider: Circle { radius: 0.4 },
+            },
+            visual: BALL,
+        }
+    }
+
+    /// Resting balls at these `xs`, the camera on ball number `focus`.
+    fn balls_at(xs: &[f64], focus: usize) -> Scenario {
         Scenario {
-            world: World::new(ball, Circle { radius: 0.4 }),
-            ball_visual: BALL,
+            objects: xs.iter().map(|&x| ball_at(x)).collect(),
+            focus,
             background: Color::rgb(0.0, 0.0, 0.0),
         }
     }
 
+    /// A single resting ball at `x`.
+    fn resting_at(x: f64) -> Scenario {
+        balls_at(&[x], 0)
+    }
+
     /// The scenario's simulation, plus a renderer drawing it on `backend`.
     fn setup(scenario: &Scenario, backend: &mut RecordingBackend) -> (Simulation, Renderer) {
-        let sim = Simulation::new(scenario.world.clone(), FRAME);
+        let sim = Simulation::new(scenario.world(), FRAME);
         (sim, Renderer::new(backend, scenario))
     }
 
@@ -339,6 +367,23 @@ mod tests {
         let (sim, mut renderer) = setup(&resting_at(3.5), &mut backend);
         renderer.draw_frame(&mut backend, &sim, 0, FRAME);
         assert_eq!(backend.proxies[0].1, Some(Vec2::new(3.5, 0.4)));
+    }
+
+    #[test]
+    fn each_object_gets_its_own_proxy_at_its_own_position() {
+        let mut backend = RecordingBackend::new(SCREEN);
+        let (sim, mut renderer) = setup(&balls_at(&[1.0, 2.0, 3.0], 0), &mut backend);
+        renderer.draw_frame(&mut backend, &sim, 0, FRAME);
+        let positions: Vec<_> = backend.proxies.iter().map(|(_, p)| *p).collect();
+        assert_eq!(positions, [1.0, 2.0, 3.0].map(|x| Some(Vec2::new(x, 0.4))));
+    }
+
+    #[test]
+    fn camera_follows_the_focused_object() {
+        let mut backend = RecordingBackend::new(SCREEN);
+        let (sim, mut renderer) = setup(&balls_at(&[1.0, 50.0], 1), &mut backend);
+        renderer.draw_frame(&mut backend, &sim, 0, FRAME);
+        assert_eq!(backend.camera_at.map(|at| at.x), Some(50.0));
     }
 
     #[test]

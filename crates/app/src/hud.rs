@@ -65,9 +65,11 @@ impl Hud {
     ///
     /// Watch "sim time" vs "real time": they stay equal at any frame rate,
     /// until frames exceed `MAX_FRAME_TIME` and the simulation falls behind.
+    /// `focus` is the index of the body the HUD describes.
     pub fn update(
         &mut self,
         sim: &Simulation,
+        focus: usize,
         steps: u32,
         stats: &FrameStats,
         camera_mode: CameraMode,
@@ -88,7 +90,8 @@ impl Hud {
         .expect(ok);
 
         let world = sim.world();
-        let ball = &world.ball;
+        let body = &world.bodies[focus];
+        let motion = &body.motion;
         write!(
             t,
             "{steps} physics steps this frame\n\
@@ -104,10 +107,10 @@ impl Hud {
             sim.clock().alpha() * 100.0,
             world.time,
             sim.clock().real_time(),
-            ball.position.x,
+            motion.position.x,
             // Height of the bottom of the ball, so it reads 0 when resting.
-            ball.position.y - world.ball_shape.radius,
-            ball.velocity.y,
+            motion.position.y - body.collider.radius,
+            motion.velocity.y,
             camera_mode.name(),
         )
         .expect(ok);
@@ -132,10 +135,29 @@ pub fn line_position(line: usize, scale: f32) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use physics::{Body, Circle, DVec2, World};
+    use physics::{Body, Circle, DVec2, Motion, World};
 
     /// Exact in binary floating point.
     const FRAME: f64 = 1.0 / 64.0;
+
+    /// A ball of radius 0.4 m.
+    fn ball(position: DVec2, velocity: DVec2) -> Body {
+        Body {
+            motion: Motion { position, velocity },
+            collider: Circle { radius: 0.4 },
+        }
+    }
+
+    #[test]
+    fn hud_describes_the_focused_object() {
+        let still = ball(DVec2::new(0.0, 0.4), DVec2::ZERO);
+        let far = ball(DVec2::new(42.0, 0.4), DVec2::ZERO);
+        let sim = Simulation::new(World::new(vec![still, far]), FRAME);
+        let mut hud = Hud::default();
+        hud.update(&sim, 1, 0, &FrameStats::default(), CameraMode::Follow);
+        let text: Vec<&str> = hud.lines().collect();
+        assert!(text.contains(&"x = 42.0 m"), "{text:?}");
+    }
 
     #[test]
     fn no_fps_until_a_full_window_has_been_measured() {
@@ -163,11 +185,8 @@ mod tests {
     #[test]
     fn hud_shows_timing_position_speed_and_camera() {
         // A ball resting on the ground (radius 0.4 m), sliding at 10 m/s.
-        let ball = Body {
-            position: DVec2::new(0.0, 0.4),
-            velocity: DVec2::new(10.0, 0.0),
-        };
-        let mut sim = Simulation::new(World::new(ball, Circle { radius: 0.4 }), FRAME);
+        let ball = ball(DVec2::new(0.0, 0.4), DVec2::new(10.0, 0.0));
+        let mut sim = Simulation::new(World::new(vec![ball]), FRAME);
         // 0.25 s = exactly 16 steps, nothing left over.
         let steps = sim.advance(0.25);
         let mut stats = FrameStats::default();
@@ -176,7 +195,7 @@ mod tests {
         }
 
         let mut hud = Hud::default();
-        hud.update(&sim, steps, &stats, CameraMode::Follow);
+        hud.update(&sim, 0, steps, &stats, CameraMode::Follow);
         let text: Vec<&str> = hud.lines().collect();
         let text = text.join("\n");
         assert!(text.contains("64 FPS (15.6 ms per frame)"), "{text}");
@@ -196,27 +215,21 @@ mod tests {
 
     #[test]
     fn hud_shows_a_placeholder_until_fps_is_known() {
-        let ball = Body {
-            position: DVec2::ZERO,
-            velocity: DVec2::ZERO,
-        };
-        let sim = Simulation::new(World::new(ball, Circle { radius: 0.4 }), FRAME);
+        let ball = ball(DVec2::ZERO, DVec2::ZERO);
+        let sim = Simulation::new(World::new(vec![ball]), FRAME);
         let mut hud = Hud::default();
-        hud.update(&sim, 0, &FrameStats::default(), CameraMode::Fixed);
+        hud.update(&sim, 0, 0, &FrameStats::default(), CameraMode::Fixed);
         assert_eq!(hud.lines().next(), Some("-- FPS"));
     }
 
     #[test]
     fn hud_text_is_replaced_not_appended_each_frame() {
-        let ball = Body {
-            position: DVec2::ZERO,
-            velocity: DVec2::ZERO,
-        };
-        let sim = Simulation::new(World::new(ball, Circle { radius: 0.4 }), FRAME);
+        let ball = ball(DVec2::ZERO, DVec2::ZERO);
+        let sim = Simulation::new(World::new(vec![ball]), FRAME);
         let mut hud = Hud::default();
-        hud.update(&sim, 0, &FrameStats::default(), CameraMode::Fixed);
+        hud.update(&sim, 0, 0, &FrameStats::default(), CameraMode::Fixed);
         let once = hud.lines().count();
-        hud.update(&sim, 0, &FrameStats::default(), CameraMode::Fixed);
+        hud.update(&sim, 0, 0, &FrameStats::default(), CameraMode::Fixed);
         assert_eq!(hud.lines().count(), once);
     }
 
