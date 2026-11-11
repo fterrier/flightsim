@@ -13,7 +13,7 @@ use std::thread;
 use std::time::Instant;
 
 use engine::platform::{Engine, Flow, ProxyId, RenderBackend, Screen};
-use engine::{Color, Game, InputEvent, Key, Shape, Visual};
+use engine::{Color, Game, InputEvent, Key};
 use glam::{Vec2, Vec3};
 use kiss3d::camera::OrbitCamera3d;
 use kiss3d::color::Color as Kiss3dColor;
@@ -138,11 +138,9 @@ impl RenderBackend for Kiss3dBackend {
         self.camera.look_at(kiss3d_vec3(eye), kiss3d_vec3(target));
     }
 
-    fn create_proxy(&mut self, visual: &Visual) -> ProxyId {
-        let mut node = match visual.shape {
-            Shape::Sphere { radius } => self.scene.add_sphere(radius),
-        };
-        node.set_color(kiss3d_color(visual.color));
+    fn create_sphere(&mut self, radius: f32, color: Color) -> ProxyId {
+        let mut node = self.scene.add_sphere(radius);
+        node.set_color(kiss3d_color(color));
         self.proxies.push(node);
         ProxyId(self.proxies.len() - 1)
     }

@@ -103,14 +103,17 @@ Rules:
    (scene nodes) for simulated objects; once per frame, one place copies
    the (interpolated) physics state into them: `Renderer::draw`, in
    `engine/src/render.rs`.
-6. **Content is data.** A scene (a "level", defined by the game) declares
-   everything that exists, *including the ground*: the engine has no
-   built-in ground, only the mechanism (static colliders in physics, a
-   ground grid in the renderer). It lists objects, each
-   described whole: its `Body` (motion + collider) for the simulation and
-   its `Visual` (shape + colour, later a glTF mesh + material) for the
-   renderer. Loading splits them; object `i` becomes physics body `i` and
-   render proxy `i` (entity IDs replace the index at step 11). The game
+6. **Content is data.** A scene (a "level", defined by the game) lists
+   everything that exists as objects, *the ground included*: as in
+   engines (Godot's `StaticBody3D`, Avian's `RigidBody::Static`), the
+   ground is a static object, not an engine built-in. Each object is
+   described whole: its body, dynamic (motion + collider) or static (a
+   collider that never moves), for the simulation, and its `Visual`
+   (shape + colour, later a glTF mesh + material) for the renderer. Only
+   what exists nowhere in particular (background, gravity) is a scene
+   setting. Loading splits objects: dynamic ones become physics bodies,
+   static ones static colliders, visuals become render proxies or grid
+   lines (entity IDs replace the index bookkeeping at step 11). The game
    loop never knows what's inside, and the render interface has a few
    generic operations that never grow with content: no `draw_plane`.
 
@@ -161,7 +164,7 @@ upgrades are deliberate.
 All rendering decisions (where proxies go, f64 → f32, zoom limits, ruler
 and HUD layout, later the NED → y-up conversion) live in `Renderer`,
 written against `RenderBackend`: a few generic operations (create a
-proxy from a `Visual`, move it, set the camera, debug lines, text). The
+sphere proxy, move it, set the camera, debug lines, text). The
 kiss3d implementation is a "humble object", one kiss3d call per method.
 
 This follows established practice: engines put the graphics API behind

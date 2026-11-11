@@ -5,9 +5,11 @@
 //! The layering follows established engines (Godot's `RenderingServer`,
 //! Unreal's RHI and scene proxies, Bevy's render world):
 //! - **`RenderBackend`**: a handful of generic operations. Create a render
-//!   proxy from a [`Visual`], move it, set the camera, draw debug lines and
-//!   text. It never grows with content: a plane or a building will be a
-//!   new `Visual` (data), not a new function.
+//!   proxy (a sphere), move it, set the camera, draw debug lines and text.
+//!   It knows geometry, not scene objects: a ground's [`Visual`] becomes
+//!   lines, a ball's a sphere. It grows only with new kinds of geometry
+//!   (meshes, later), never with content: a plane or a building will be a
+//!   mesh (data), not a new function.
 //! - **`Kiss3dBackend`** (crate `engine_kiss3d`) implements it with one
 //!   kiss3d call per method: a "humble object", too simple to hide bugs,
 //!   and the only rendering code tests can't run.
@@ -17,10 +19,10 @@
 //!   behind Unreal's "null RHI").
 
 use glam::{Vec2, Vec3};
-use physics::{DVec2, DVec3};
+use physics::{DVec2, DVec3, StaticCollider};
 
 use crate::camera::Camera;
-use crate::scene::{Ground, GroundGrid, Scene};
+use crate::scene::{Scene, SceneBody};
 use crate::simulation::Simulation;
 
 /// A colour, in *linear* light (how much light, not how bright it looks).
@@ -47,7 +49,12 @@ pub(crate) const WHITE: Color = Color::rgb(1.0, 1.0, 1.0);
 // TODO(later): `Mesh(asset)` for our own 3D models (glTF from Blender).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Shape {
-    Sphere { radius: f32 },
+    Sphere {
+        radius: f32,
+    },
+    /// A ground drawn as a grid of lines, at its static collider's
+    /// elevation.
+    Grid(GroundGrid),
 }
 
 /// What an object looks like: data, not code. Engines call this a mesh +
@@ -56,7 +63,34 @@ pub enum Shape {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Visual {
     pub shape: Shape,
+    /// The object's colour (for a grid: its major lines).
     pub color: Color,
+}
+
+/// How a ground grid looks: a line every `spacing` metres, a brighter one
+/// (the visual's colour) every `major_every` lines, over `half_size`
+/// metres around what the camera looks at.
+// TODO(later): textured terrain, from real elevation data.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GroundGrid {
+    /// Metres between lines.
+    pub spacing: f64,
+    pub major_every: u32,
+    /// Metres drawn on each side of the camera's target.
+    pub half_size: f64,
+    pub minor_color: Color,
+}
+
+impl Default for GroundGrid {
+    /// A line every 2 m, a major one every 10 m, 50 m around the camera.
+    fn default() -> Self {
+        Self {
+            spacing: 2.0,
+            major_every: 5,
+            half_size: 50.0,
+            minor_color: Color::rgb(0.08, 0.08, 0.08),
+        }
+    }
 }
 
 /// A handle to a render proxy owned by the backend (like Godot's `RID`).
@@ -84,8 +118,10 @@ pub trait RenderBackend {
     /// The camera: at `eye`, looking at `target`.
     fn set_camera(&mut self, eye: Vec3, target: Vec3);
 
-    /// Retained objects: created once, then moved every frame.
-    fn create_proxy(&mut self, visual: &Visual) -> ProxyId;
+    /// Retained objects: created once, then moved every frame. Here a
+    /// sphere of `radius` metres.
+    // TODO(later): `create_mesh` for our own 3D models.
+    fn create_sphere(&mut self, radius: f32, color: Color) -> ProxyId;
     fn set_position(&mut self, proxy: ProxyId, position: Vec3);
 
     /// Immediate drawing, re-issued every frame. Two coordinate spaces, as
@@ -105,18 +141,26 @@ const SUN_DIRECTION: DVec3 = DVec3::new(0.4, -0.3, 0.85);
 const MAJOR_LINE_WIDTH: f32 = 2.0;
 const MINOR_LINE_WIDTH: f32 = 1.0;
 
-/// Draws the world: one render proxy per scene object, moved every frame
-/// to where the simulation says, plus world-space debug drawing, all as
-/// seen by a given camera. (The camera itself is a game-side object, as in
-/// engines; the HUD is a separate overlay, see `hud`.)
+/// How one scene object is drawn.
+enum Drawable {
+    /// A retained render proxy that follows body number `body`.
+    Proxy { proxy: ProxyId, body: usize },
+    /// A ground grid, re-drawn every frame around the camera.
+    Grid {
+        grid: GroundGrid,
+        major_color: Color,
+        elevation: f64,
+    },
+}
+
+/// Draws the world, every scene object according to its visual, as seen by
+/// a given camera. (The camera itself is a game-side object, as in engines;
+/// the HUD is a separate overlay, see `hud`.)
 pub(crate) struct Renderer {
-    /// One render proxy per scene object, in the same order as the world's
-    /// bodies: proxy `i` shows body `i`.
+    /// One per scene object, in scene order.
     // TODO(step-11): keyed by entity ID instead of index; created when an
     // entity spawns, freed when it despawns (like Godot's `free_rid`).
-    proxies: Vec<ProxyId>,
-    /// The scene's ground, drawn as a grid (none: nothing to draw).
-    ground: Option<Ground>,
+    drawables: Vec<Drawable>,
 }
 
 impl Renderer {
@@ -124,14 +168,29 @@ impl Renderer {
     pub(crate) fn new(backend: &mut impl RenderBackend, scene: &Scene) -> Self {
         backend.set_background(scene.background);
         backend.set_sun(to_render(SUN_DIRECTION.normalize()));
-        Self {
-            proxies: scene
-                .objects
-                .iter()
-                .map(|object| backend.create_proxy(&object.visual))
-                .collect(),
-            ground: scene.ground,
-        }
+        let drawables = scene
+            .objects
+            .iter()
+            .enumerate()
+            .map(|(index, object)| match (object.visual.shape, object.body) {
+                (Shape::Sphere { radius }, SceneBody::Dynamic(_)) => Drawable::Proxy {
+                    proxy: backend.create_sphere(radius, object.visual.color),
+                    body: scene
+                        .body_index(index)
+                        .expect("a dynamic object has a body"),
+                },
+                (Shape::Grid(grid), SceneBody::Static(StaticCollider::Ground { elevation })) => {
+                    Drawable::Grid {
+                        grid,
+                        major_color: object.visual.color,
+                        elevation,
+                    }
+                }
+                // TODO(step-09): scene validation reports this as an error.
+                (shape, body) => panic!("object {index}: can't draw a {shape:?} for a {body:?}"),
+            })
+            .collect();
+        Self { drawables }
     }
 
     /// Prepares the world for this frame: camera, proxies, ground grid.
@@ -147,19 +206,25 @@ impl Renderer {
         //  in one loop over all objects.
         //  TODO(step-08): orientations too (position + rotation).
         // ═══════════════════════════════════════════════════════════════
-        for (proxy, position) in self.proxies.iter().zip(sim.drawn_positions()) {
-            backend.set_position(*proxy, to_render(position));
-        }
-
-        if let Some(ground) = &self.ground {
-            let grid = &ground.grid;
-            for line in grid_lines(camera.target.truncate(), grid, ground.elevation) {
-                let (color, width) = if line.major {
-                    (grid.major_color, MAJOR_LINE_WIDTH)
-                } else {
-                    (grid.minor_color, MINOR_LINE_WIDTH)
-                };
-                backend.world_line(to_render(line.from), to_render(line.to), color, width);
+        for drawable in &self.drawables {
+            match drawable {
+                Drawable::Proxy { proxy, body } => {
+                    backend.set_position(*proxy, to_render(sim.drawn_position(*body)));
+                }
+                Drawable::Grid {
+                    grid,
+                    major_color,
+                    elevation,
+                } => {
+                    for line in grid_lines(camera.target.truncate(), grid, *elevation) {
+                        let (color, width) = if line.major {
+                            (*major_color, MAJOR_LINE_WIDTH)
+                        } else {
+                            (grid.minor_color, MINOR_LINE_WIDTH)
+                        };
+                        backend.world_line(to_render(line.from), to_render(line.to), color, width);
+                    }
+                }
             }
         }
     }
@@ -238,9 +303,10 @@ pub(crate) mod fakes {
         pub(crate) sun: Option<Vec3>,
         /// Latest camera: eye and target.
         pub(crate) camera: Option<(Vec3, Vec3)>,
-        /// Created proxies: their visual and latest position.
-        pub(crate) proxies: Vec<(Visual, Option<Vec3>)>,
-        pub(crate) lines: Vec<(Vec3, Vec3)>,
+        /// Created spheres: radius, colour and latest position.
+        pub(crate) proxies: Vec<(f32, Color, Option<Vec3>)>,
+        /// World lines: ends and colour.
+        pub(crate) lines: Vec<(Vec3, Vec3, Color)>,
         /// Text, position, size.
         pub(crate) texts: Vec<(String, Vec2, f32)>,
     }
@@ -272,15 +338,15 @@ pub(crate) mod fakes {
         fn set_camera(&mut self, eye: Vec3, target: Vec3) {
             self.camera = Some((eye, target));
         }
-        fn create_proxy(&mut self, visual: &Visual) -> ProxyId {
-            self.proxies.push((*visual, None));
+        fn create_sphere(&mut self, radius: f32, color: Color) -> ProxyId {
+            self.proxies.push((radius, color, None));
             ProxyId(self.proxies.len() - 1)
         }
         fn set_position(&mut self, proxy: ProxyId, position: Vec3) {
-            self.proxies[proxy.0].1 = Some(position);
+            self.proxies[proxy.0].2 = Some(position);
         }
-        fn world_line(&mut self, from: Vec3, to: Vec3, _color: Color, _width: f32) {
-            self.lines.push((from, to));
+        fn world_line(&mut self, from: Vec3, to: Vec3, color: Color, _width: f32) {
+            self.lines.push((from, to, color));
         }
         fn screen_text(&mut self, text: &str, at: Vec2, size: f32, _color: Color) {
             self.texts.push((text.to_owned(), at, size));
@@ -298,7 +364,7 @@ pub(crate) mod fakes {
         fn set_background(&mut self, _color: Color) {}
         fn set_sun(&mut self, _direction: Vec3) {}
         fn set_camera(&mut self, _eye: Vec3, _target: Vec3) {}
-        fn create_proxy(&mut self, _visual: &Visual) -> ProxyId {
+        fn create_sphere(&mut self, _radius: f32, _color: Color) -> ProxyId {
             ProxyId(0)
         }
         fn set_position(&mut self, _proxy: ProxyId, _position: Vec3) {}
@@ -311,7 +377,7 @@ pub(crate) mod fakes {
 mod tests {
     use super::fakes::RecordingBackend;
     use super::*;
-    use crate::scene::{Ground, GroundGrid, SceneObject};
+    use crate::scene::SceneObject;
     use physics::{Body, Motion, STANDARD_GRAVITY, Sphere};
 
     const BALL: Visual = Visual {
@@ -330,38 +396,54 @@ mod tests {
     /// drawn positions are exact.
     fn ball_at(north: f64, east: f64) -> SceneObject {
         SceneObject {
-            body: Body {
-                motion: Motion {
-                    position: DVec3::new(north, east, -0.4),
-                    velocity: DVec3::ZERO,
-                },
-                collider: Sphere { radius: 0.4 },
-            },
+            body: SceneBody::Dynamic(ball_body(north, east)),
             visual: BALL,
         }
     }
 
-    /// Flat ground at sea level, default grid.
-    const GROUND: Ground = Ground {
-        elevation: 0.0,
-        grid: GRID,
-    };
+    fn ball_body(north: f64, east: f64) -> Body {
+        Body {
+            motion: Motion {
+                position: DVec3::new(north, east, -0.4),
+                velocity: DVec3::ZERO,
+            },
+            collider: Sphere { radius: 0.4 },
+        }
+    }
+
     const GRID: GroundGrid = GroundGrid {
         spacing: 2.0,
         major_every: 5,
         half_size: 50.0,
-        minor_color: Color::rgb(0.1, 0.1, 0.1),
-        major_color: Color::rgb(0.5, 0.5, 0.5),
+        minor_color: MINOR,
     };
+    const MINOR: Color = Color::rgb(0.1, 0.1, 0.1);
+    const MAJOR: Color = Color::rgb(0.5, 0.5, 0.5);
 
+    /// Flat ground at `elevation` metres, drawn as `grid`.
+    fn ground(elevation: f64, grid: GroundGrid) -> SceneObject {
+        SceneObject {
+            body: SceneBody::Static(StaticCollider::Ground { elevation }),
+            visual: Visual {
+                shape: Shape::Grid(grid),
+                color: MAJOR,
+            },
+        }
+    }
+
+    /// A scene of `objects`, focused on the first one.
     fn scene(objects: Vec<SceneObject>) -> Scene {
         Scene {
             objects,
             focus: 0,
             background: BACKGROUND,
             gravity: STANDARD_GRAVITY,
-            ground: Some(GROUND),
         }
+    }
+
+    /// A ground at sea level, then a ball at the origin.
+    fn ball_on_the_ground() -> Scene {
+        scene(vec![ground(0.0, GRID), ball_at(0.0, 0.0)])
     }
 
     /// The scene's simulation, a renderer for it on `backend`, and a camera
@@ -391,15 +473,20 @@ mod tests {
     }
 
     #[test]
-    fn creates_one_proxy_per_object_with_background_and_sun() {
+    fn creates_one_proxy_per_ball_with_background_and_sun() {
+        // The ground is drawn as lines every frame: no proxy.
         let mut backend = RecordingBackend::new(SCREEN);
         setup(
-            &scene(vec![ball_at(1.0, 0.0), ball_at(2.0, 0.0)]),
+            &scene(vec![
+                ground(0.0, GRID),
+                ball_at(1.0, 0.0),
+                ball_at(2.0, 0.0),
+            ]),
             &mut backend,
             DVec3::ZERO,
         );
         assert_eq!(backend.proxies.len(), 2);
-        assert_eq!(backend.proxies[0].0, BALL);
+        assert_eq!(backend.proxies[0], (0.4, WHITE, None));
         assert_eq!(backend.background, Some(BACKGROUND));
         let sun = backend.sun.expect("a sun is set");
         assert!(sun.y < 0.0, "sunlight goes down: {sun}");
@@ -409,11 +496,12 @@ mod tests {
     #[test]
     fn each_proxy_is_placed_where_the_simulation_says() {
         let mut backend = RecordingBackend::new(SCREEN);
-        let objects = vec![ball_at(1.0, 2.0), ball_at(-3.0, 4.0)];
+        // The ground in between: object 2 is body 1.
+        let objects = vec![ball_at(1.0, 2.0), ground(0.0, GRID), ball_at(-3.0, 4.0)];
         let (sim, renderer, camera) = setup(&scene(objects), &mut backend, DVec3::ZERO);
         renderer.draw(&mut backend, &sim, &camera);
         // NED (north, east, -0.4) -> render (east, 0.4, -north).
-        let positions: Vec<_> = backend.proxies.iter().map(|(_, p)| *p).collect();
+        let positions: Vec<_> = backend.proxies.iter().map(|(_, _, p)| *p).collect();
         assert_eq!(
             positions,
             [
@@ -428,8 +516,7 @@ mod tests {
         // Retained mode: the proxy lives across frames; only its position
         // is updated.
         let mut backend = RecordingBackend::new(SCREEN);
-        let (sim, renderer, camera) =
-            setup(&scene(vec![ball_at(0.0, 0.0)]), &mut backend, DVec3::ZERO);
+        let (sim, renderer, camera) = setup(&ball_on_the_ground(), &mut backend, DVec3::ZERO);
         for _ in 0..3 {
             renderer.draw(&mut backend, &sim, &camera);
         }
@@ -440,7 +527,7 @@ mod tests {
     fn camera_is_sent_in_render_axes() {
         let mut backend = RecordingBackend::new(SCREEN);
         let target = DVec3::new(40.0, 12.0, -5.0);
-        let (sim, renderer, camera) = setup(&scene(vec![ball_at(0.0, 0.0)]), &mut backend, target);
+        let (sim, renderer, camera) = setup(&ball_on_the_ground(), &mut backend, target);
         renderer.draw(&mut backend, &sim, &camera);
         let (eye, sent_target) = backend.camera.expect("a camera is set");
         assert_eq!(sent_target, to_render(target));
@@ -451,40 +538,56 @@ mod tests {
     fn the_grid_lies_on_the_ground_around_the_camera_target() {
         let mut backend = RecordingBackend::new(SCREEN);
         let target = DVec3::new(100.0, -40.0, -5.0);
-        let (sim, renderer, camera) = setup(&scene(vec![ball_at(0.0, 0.0)]), &mut backend, target);
+        let (sim, renderer, camera) = setup(&ball_on_the_ground(), &mut backend, target);
         renderer.draw(&mut backend, &sim, &camera);
         // 51 lines each way, all on the ground (render y = 0), spanning
         // 50 m either side of the target.
         assert_eq!(backend.lines.len(), 2 * 51);
-        assert!(backend.lines.iter().all(|(a, b)| a.y == 0.0 && b.y == 0.0));
-        let easts = backend.lines.iter().flat_map(|(a, b)| [a.x, b.x]);
+        assert!(
+            backend
+                .lines
+                .iter()
+                .all(|(a, b, _)| a.y == 0.0 && b.y == 0.0)
+        );
+        let easts = backend.lines.iter().flat_map(|(a, b, _)| [a.x, b.x]);
         let (min, max) = easts.fold((f32::MAX, f32::MIN), |(lo, hi), x| (lo.min(x), hi.max(x)));
         assert_eq!((min, max), (-90.0, 10.0));
     }
 
     #[test]
-    fn the_grid_is_drawn_at_the_ground_elevation_with_the_scene_look() {
-        let mut plateau = scene(vec![ball_at(0.0, 0.0)]);
-        plateau.ground = Some(Ground {
-            elevation: 7.0,
-            grid: GroundGrid {
-                spacing: 10.0,
-                half_size: 20.0,
-                ..GRID
-            },
-        });
+    fn the_grid_is_drawn_at_the_ground_elevation_with_its_own_look() {
+        let grid = GroundGrid {
+            spacing: 10.0,
+            half_size: 20.0,
+            ..GRID
+        };
+        let plateau = scene(vec![ball_at(0.0, 0.0), ground(7.0, grid)]);
         let mut backend = RecordingBackend::new(SCREEN);
         let (sim, renderer, camera) = setup(&plateau, &mut backend, DVec3::ZERO);
         renderer.draw(&mut backend, &sim, &camera);
         // Render y is up: the grid floats 7 m up; 5 lines each way.
-        assert!(backend.lines.iter().all(|(a, b)| a.y == 7.0 && b.y == 7.0));
+        assert!(
+            backend
+                .lines
+                .iter()
+                .all(|(a, b, _)| a.y == 7.0 && b.y == 7.0)
+        );
         assert_eq!(backend.lines.len(), 2 * 5);
     }
 
     #[test]
+    fn the_visual_colour_draws_major_lines_the_grid_minor_colour_the_others() {
+        let mut backend = RecordingBackend::new(SCREEN);
+        let (sim, renderer, camera) = setup(&ball_on_the_ground(), &mut backend, DVec3::ZERO);
+        renderer.draw(&mut backend, &sim, &camera);
+        let count = |color| backend.lines.iter().filter(|l| l.2 == color).count();
+        // 11 major and 40 minor lines each way (see `every_fifth_...`).
+        assert_eq!((count(MAJOR), count(MINOR)), (2 * 11, 2 * 40));
+    }
+
+    #[test]
     fn without_a_ground_there_is_no_grid() {
-        let mut empty_sky = scene(vec![ball_at(0.0, 0.0)]);
-        empty_sky.ground = None;
+        let empty_sky = scene(vec![ball_at(0.0, 0.0)]);
         let mut backend = RecordingBackend::new(SCREEN);
         let (sim, renderer, camera) = setup(&empty_sky, &mut backend, DVec3::ZERO);
         renderer.draw(&mut backend, &sim, &camera);
@@ -515,6 +618,29 @@ mod tests {
                 -50.0, -40.0, -30.0, -20.0, -10.0, 0.0, 10.0, 20.0, 30.0, 40.0, 50.0
             ]
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "object 0: can't draw a Grid")]
+    fn a_moving_grid_is_rejected() {
+        // Grids are drawn at a static ground's elevation: a body has none.
+        let grid_ball = SceneObject {
+            body: SceneBody::Dynamic(ball_body(0.0, 0.0)),
+            visual: ground(0.0, GRID).visual,
+        };
+        Renderer::new(&mut RecordingBackend::new(SCREEN), &scene(vec![grid_ball]));
+    }
+
+    #[test]
+    #[should_panic(expected = "object 1: can't draw a Sphere")]
+    fn a_ground_drawn_as_a_sphere_is_rejected() {
+        // Spheres follow a body, and the ground has none.
+        let ball_ground = SceneObject {
+            visual: BALL,
+            ..ground(0.0, GRID)
+        };
+        let scene = scene(vec![ball_at(0.0, 0.0), ball_ground]);
+        Renderer::new(&mut RecordingBackend::new(SCREEN), &scene);
     }
 
     #[test]

@@ -35,15 +35,15 @@ mod timestep;
 // physics types their objects are made of), the input they bind.
 pub use engine::Game;
 pub use input::{Command, InputEvent, Key};
-pub use render::{Color, Shape, Visual};
-pub use scene::{Ground, GroundGrid, Scene, SceneObject};
+pub use render::{Color, GroundGrid, Shape, Visual};
+pub use scene::{Scene, SceneBody, SceneObject};
 pub use simulation::WorldView;
 
 // The engine is the games' single dependency: the physics crate is an
 // engine detail, its content types are re-exported here (the `bevy` crate
 // does the same for `bevy_ecs`, `bevy_render`...). Not `World`: games see
 // it through `WorldView`, without the machinery (`World::step`).
-pub use physics::{Body, DVec2, DVec3, Motion, STANDARD_GRAVITY, Sphere};
+pub use physics::{Body, DVec2, DVec3, Motion, STANDARD_GRAVITY, Sphere, StaticCollider};
 
 /// For platform crates only (window, game loop, graphics backend, like
 /// `engine_kiss3d`): the engine they run, and the interface they implement

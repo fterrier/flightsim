@@ -39,8 +39,8 @@ pub trait Game {
 
     /// The game's own HUD lines, written under the engine's diagnostics.
     /// The game gets a read-only view of the world's *data* (bodies, time),
-    /// never the simulation machinery. `focus` is the index of the object
-    /// the camera follows.
+    /// never the simulation machinery. `focus` is the index (in
+    /// `world.bodies`) of the body the camera follows.
     fn write_hud(&self, world: WorldView<'_>, focus: usize, out: &mut String) -> fmt::Result;
 }
 
@@ -89,6 +89,8 @@ pub struct Engine<G: Game> {
     /// The loaded scene, kept to reload it on restart.
     scene: Scene,
     sim: Simulation,
+    /// The body (index in the world's bodies) of the scene's focus object.
+    focus: usize,
     /// Where to look from, and how far: follows the scene's focus.
     camera: Camera,
     renderer: Renderer,
@@ -102,17 +104,20 @@ impl<G: Game> Engine<G> {
     /// shows one before the first `frame` call).
     pub fn new(backend: &mut impl RenderBackend, game: G) -> Self {
         // TODO(step-09): once scenes come from files, validate them here
-        // (at least one object, `focus` in range) and report a clear error
-        // instead of panicking on an index.
+        // (`focus` in range and dynamic) and report a clear error instead
+        // of panicking.
         let scene = game.scene();
         let sim = Simulation::new(scene.world(), game.physics_dt());
-        let start = scene.objects[scene.focus].body.motion.position;
-        let camera = Camera::new(start);
+        let focus = scene
+            .body_index(scene.focus)
+            .unwrap_or_else(|| panic!("the focus object {} is static", scene.focus));
+        let camera = Camera::new(sim.world().bodies[focus].motion.position);
         let renderer = Renderer::new(backend, &scene);
         let mut engine = Self {
             game,
             scene,
             sim,
+            focus,
             camera,
             renderer,
             hud: Hud::default(),
@@ -138,7 +143,7 @@ impl<G: Game> Engine<G> {
         let steps = self.sim.advance(frame_time);
         // The camera glides towards where the focused object is drawn
         // (interpolated), in real frame time.
-        let target = self.sim.drawn_position(self.scene.focus);
+        let target = self.sim.drawn_position(self.focus);
         self.camera.update(target, frame_time);
         self.draw(backend, steps);
     }
@@ -204,24 +209,26 @@ impl<G: Game> Engine<G> {
             self.camera.mode.name(),
             self.lag.name(),
         )
-        .and_then(|()| self.game.write_hud(self.sim.view(), self.scene.focus, out))
+        .and_then(|()| self.game.write_hud(self.sim.view(), self.focus, out))
     }
 }
 
-/// A minimal game for tests: balls resting on the ground at given x
-/// positions, simple bindings, one HUD line of its own.
+/// A minimal game for tests: a ground, then balls resting on it at given
+/// x positions, simple bindings, one HUD line of its own.
 #[cfg(test)]
 pub(crate) mod testing {
     use super::*;
     use crate::input::Key;
-    use crate::render::{Color, Shape, Visual, WHITE};
-    use crate::scene::{Ground, GroundGrid, SceneObject};
-    use physics::{Body, DVec3, Motion, STANDARD_GRAVITY, Sphere};
+    use crate::render::{Color, GroundGrid, Shape, Visual, WHITE};
+    use crate::scene::{SceneBody, SceneObject};
+    use physics::{Body, DVec3, Motion, STANDARD_GRAVITY, Sphere, StaticCollider};
 
     pub(crate) struct TestGame {
         /// Where the balls start (metres north) and how fast they slide
         /// north (m/s).
         pub balls: Vec<(f64, f64)>,
+        /// The scene's focus: an object index, where 0 is the ground and
+        /// 1 the first ball.
         pub focus: usize,
     }
 
@@ -232,28 +239,35 @@ pub(crate) mod testing {
         }
 
         fn scene(&self) -> Scene {
+            let ground = SceneObject {
+                body: SceneBody::Static(StaticCollider::Ground { elevation: 0.0 }),
+                visual: Visual {
+                    shape: Shape::Grid(GroundGrid::default()),
+                    color: WHITE,
+                },
+            };
             let ball = |&(north, speed): &(f64, f64)| SceneObject {
-                body: Body {
+                body: SceneBody::Dynamic(Body {
                     motion: Motion {
                         position: DVec3::new(north, 0.0, -0.5),
                         velocity: DVec3::new(speed, 0.0, 0.0),
                     },
                     collider: Sphere { radius: 0.5 },
-                },
+                }),
                 visual: Visual {
                     shape: Shape::Sphere { radius: 0.5 },
                     color: WHITE,
                 },
             };
             Scene {
-                objects: self.balls.iter().map(ball).collect(),
+                // The ground first: object indices differ from body
+                // indices, as they can in a real game.
+                objects: std::iter::once(ground)
+                    .chain(self.balls.iter().map(ball))
+                    .collect(),
                 focus: self.focus,
                 background: Color::rgb(0.0, 0.0, 0.0),
                 gravity: STANDARD_GRAVITY,
-                ground: Some(Ground {
-                    elevation: 0.0,
-                    grid: GroundGrid::default(),
-                }),
             }
         }
 
@@ -305,7 +319,7 @@ mod tests {
     fn sliding_ball() -> TestGame {
         TestGame {
             balls: vec![(0.0, 64.0)],
-            focus: 0,
+            focus: 1,
         }
     }
 
@@ -343,7 +357,7 @@ mod tests {
     fn the_camera_follows_the_scene_focus() {
         let game = TestGame {
             balls: vec![(1.0, 0.0), (50.0, 0.0)],
-            focus: 1,
+            focus: 2, // the second ball: body 1
         };
         let (mut engine, mut backend) = engine(game);
         engine.frame(&mut backend, FRAME);
@@ -351,6 +365,16 @@ mod tests {
         // south) that's (0, 0.5, -50).
         let (_, target) = backend.camera.expect("a camera is set");
         assert_eq!(target, Vec3::new(0.0, 0.5, -50.0));
+    }
+
+    #[test]
+    #[should_panic(expected = "the focus object 0 is static")]
+    fn the_camera_cannot_focus_on_a_static_object() {
+        // A static object has no body to follow.
+        engine(TestGame {
+            balls: vec![(0.0, 0.0)],
+            focus: 0, // the ground
+        });
     }
 
     #[test]

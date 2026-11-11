@@ -68,7 +68,7 @@ impl Simulation {
         steps
     }
 
-    /// Where to draw each body now, in the order of `world().bodies`:
+    /// Where to draw body number `index` (in `world().bodies`) now:
     /// `alpha` of the way from its position before the latest step to its
     /// current one.
     ///
@@ -76,15 +76,6 @@ impl Simulation {
     /// behind the simulation. The alternative, *extrapolating* ahead from
     /// the velocity, overshoots whenever something changes direction (like
     /// a ball landing).
-    pub(crate) fn drawn_positions(&self) -> impl Iterator<Item = DVec3> + '_ {
-        let alpha = self.clock.alpha();
-        self.previous
-            .iter()
-            .zip(positions(&self.world))
-            .map(move |(previous, current)| previous.lerp(current, alpha))
-    }
-
-    /// Where to draw body number `index` now (see `drawn_positions`).
     pub(crate) fn drawn_position(&self, index: usize) -> DVec3 {
         let current = self.world.bodies[index].motion.position;
         self.previous[index].lerp(current, self.clock.alpha())
@@ -149,7 +140,9 @@ mod tests {
     }
 
     fn drawn_x(sim: &Simulation) -> Vec<f64> {
-        sim.drawn_positions().map(|p| p.x).collect()
+        (0..sim.world().bodies.len())
+            .map(|i| sim.drawn_position(i).x)
+            .collect()
     }
 
     #[test]

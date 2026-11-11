@@ -75,7 +75,7 @@ mod tests {
         });
         let game = TestGame {
             balls: vec![(-3.0, 6.0), (0.0, 8.0), (3.0, 10.0)],
-            focus: 1,
+            focus: 2,
         };
         let mut engine = Engine::new(&mut backend, game);
 
