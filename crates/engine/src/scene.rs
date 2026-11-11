@@ -5,36 +5,27 @@
 //! define the actual scenes.
 //!
 //! As in engines, the ground is not special: it's an object like a ball,
-//! one that never moves (a *static* body, like Godot's `StaticBody3D` or
-//! Avian's `RigidBody::Static`). Only ambient settings that exist nowhere
-//! in particular (background, gravity) are scene fields, like Godot's
-//! `WorldEnvironment` or Unity's render and physics settings.
+//! with a body that never moves (a *static* body, like Rapier's fixed
+//! bodies or Godot's `StaticBody3D`). Only ambient settings that exist
+//! nowhere in particular (background, gravity) are scene fields, like
+//! Godot's `WorldEnvironment` or Unity's render and physics settings.
 //!
 //! Loading splits each object: its body goes to the simulation (`world()`),
-//! its visual to the renderer.
+//! its visual to the renderer. Object `i` becomes body `i` and drawable
+//! `i`: one index everywhere.
 
-use physics::{Body, DVec3, StaticCollider, World};
+use physics::{Body, DVec3, World};
 
 use crate::render::{Color, Visual};
-
-/// How an object takes part in physics.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum SceneBody {
-    /// Moves: falls, gets thrown (Avian's `RigidBody::Dynamic`, Godot's
-    /// `RigidBody3D`).
-    Dynamic(Body),
-    /// Never moves: the ground, later buildings (Avian's
-    /// `RigidBody::Static`, Godot's `StaticBody3D`).
-    Static(StaticCollider),
-}
 
 /// One object of a scene: everything about it, in one place.
 // TODO(step-11): becomes an ECS "bundle": the group of components an
 // entity is spawned with.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SceneObject {
-    /// How it takes part in physics: for the simulation.
-    pub body: SceneBody,
+    /// How it moves and collides (or doesn't: static bodies): for the
+    /// simulation.
+    pub body: Body,
     /// What it looks like: for the renderer.
     pub visual: Visual,
 }
@@ -44,8 +35,7 @@ pub struct Scene {
     /// Everything that exists in the world: moving objects and static ones
     /// (the ground) alike.
     pub objects: Vec<SceneObject>,
-    /// Index (in `objects`) of the object the camera follows. Must be a
-    /// dynamic one.
+    /// Index (in `objects`) of the object the camera follows.
     pub focus: usize,
     /// Sky colour, in linear light (see `render::Color`).
     pub background: Color,
@@ -54,33 +44,11 @@ pub struct Scene {
 }
 
 impl Scene {
-    /// The physics side of the scene: dynamic objects become the world's
-    /// bodies (in order), static ones its static colliders.
+    /// The physics side of the scene: object `i`'s body is the world's
+    /// body `i`.
     pub(crate) fn world(&self) -> World {
-        let mut bodies = Vec::new();
-        let mut statics = Vec::new();
-        for object in &self.objects {
-            match object.body {
-                SceneBody::Dynamic(body) => bodies.push(body),
-                SceneBody::Static(collider) => statics.push(collider),
-            }
-        }
-        World::new(bodies, statics, self.gravity)
-    }
-
-    /// The index in the world's bodies of object `object`, if it's dynamic
-    /// (static objects have no body). Bodies are created in object order,
-    /// skipping static objects, so it's the number of dynamic objects
-    /// before it.
-    // TODO(step-11): entity IDs replace this index arithmetic.
-    pub(crate) fn body_index(&self, object: usize) -> Option<usize> {
-        let is_dynamic = |o: &SceneObject| matches!(o.body, SceneBody::Dynamic(_));
-        is_dynamic(&self.objects[object]).then(|| {
-            self.objects[..object]
-                .iter()
-                .filter(|o| is_dynamic(o))
-                .count()
-        })
+        let bodies = self.objects.iter().map(|object| object.body).collect();
+        World::new(bodies, self.gravity)
     }
 }
 
@@ -88,67 +56,45 @@ impl Scene {
 mod tests {
     use super::*;
     use crate::render::{GroundGrid, Shape, WHITE};
-    use physics::{Motion, STANDARD_GRAVITY, Sphere};
+    use physics::{BodyType, Collider, Motion, STANDARD_GRAVITY};
 
-    fn ball_body(north: f64) -> Body {
-        Body {
-            motion: Motion {
-                position: DVec3::new(north, 0.0, -1.0),
-                velocity: DVec3::ZERO,
-            },
-            collider: Sphere { radius: 1.0 },
-        }
-    }
-
-    fn ball(north: f64) -> SceneObject {
+    fn object(body_type: BodyType, collider: Collider, shape: Shape) -> SceneObject {
         SceneObject {
-            body: SceneBody::Dynamic(ball_body(north)),
+            body: Body {
+                body_type,
+                motion: Motion {
+                    position: DVec3::new(1.0, 2.0, -3.0),
+                    velocity: DVec3::ZERO,
+                },
+                collider,
+            },
             visual: Visual {
-                shape: Shape::Sphere { radius: 1.0 },
+                shape,
                 color: WHITE,
             },
         }
     }
 
-    fn ground(elevation: f64) -> SceneObject {
-        SceneObject {
-            body: SceneBody::Static(StaticCollider::Ground { elevation }),
-            visual: Visual {
-                shape: Shape::Grid(GroundGrid::default()),
-                color: WHITE,
-            },
-        }
-    }
-
-    fn scene(objects: Vec<SceneObject>) -> Scene {
-        Scene {
-            objects,
-            focus: 0,
+    #[test]
+    fn each_object_becomes_the_body_with_its_index() {
+        let ground = object(
+            BodyType::Static,
+            Collider::HalfSpace,
+            Shape::Grid(GroundGrid::default()),
+        );
+        let ball = object(
+            BodyType::Dynamic,
+            Collider::Sphere { radius: 1.0 },
+            Shape::Sphere { radius: 1.0 },
+        );
+        let scene = Scene {
+            objects: vec![ground, ball],
+            focus: 1,
             background: WHITE,
             gravity: STANDARD_GRAVITY,
-        }
-    }
-
-    #[test]
-    fn dynamic_objects_become_bodies_in_order() {
-        let world = scene(vec![ball(1.0), ball(2.0)]).world();
-        assert_eq!(world.bodies, [ball_body(1.0), ball_body(2.0)]);
+        };
+        let world = scene.world();
+        assert_eq!(world.bodies, [ground.body, ball.body]);
         assert_eq!(world.gravity, STANDARD_GRAVITY);
-        assert!(world.statics.is_empty());
-    }
-
-    #[test]
-    fn static_objects_become_static_colliders() {
-        let world = scene(vec![ground(12.0), ball(1.0)]).world();
-        assert_eq!(world.statics, [StaticCollider::Ground { elevation: 12.0 }]);
-        assert_eq!(world.bodies, [ball_body(1.0)]);
-    }
-
-    #[test]
-    fn body_index_skips_static_objects() {
-        let scene = scene(vec![ball(1.0), ground(0.0), ball(2.0)]);
-        assert_eq!(scene.body_index(0), Some(0));
-        assert_eq!(scene.body_index(1), None); // the ground has no body
-        assert_eq!(scene.body_index(2), Some(1));
     }
 }

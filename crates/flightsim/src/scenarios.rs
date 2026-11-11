@@ -3,8 +3,8 @@
 //! z down): altitude is -z, and "up" velocities are negative.
 
 use engine::{
-    Body, Color, DVec3, GroundGrid, Motion, STANDARD_GRAVITY, Scene, SceneBody, SceneObject, Shape,
-    Sphere, StaticCollider, Visual,
+    Body, BodyType, Collider, Color, DVec3, GroundGrid, Motion, STANDARD_GRAVITY, Scene,
+    SceneObject, Shape, Visual,
 };
 
 /// Flat ground at sea level, where the balls start.
@@ -45,13 +45,19 @@ pub(crate) fn ball_throws() -> Scene {
     }
 }
 
-/// The ground: a static object, drawn as a grid with a line every 2 m,
+/// The ground: a static body whose surface is at `GROUND_ELEVATION`, drawn
+/// as a grid with a line every 2 m,
 /// a brighter one every 10 m.
 fn ground() -> SceneObject {
     SceneObject {
-        body: SceneBody::Static(StaticCollider::Ground {
-            elevation: GROUND_ELEVATION,
-        }),
+        body: Body {
+            body_type: BodyType::Static,
+            motion: Motion {
+                position: DVec3::new(0.0, 0.0, -GROUND_ELEVATION),
+                velocity: DVec3::ZERO,
+            },
+            collider: Collider::HalfSpace,
+        },
         visual: Visual {
             shape: Shape::Grid(GroundGrid {
                 spacing: 2.0,
@@ -69,13 +75,14 @@ fn ground() -> SceneObject {
 /// collider's size: what you see is what collides.
 fn ball(east: f64, radius: f64, velocity: DVec3, color: Color) -> SceneObject {
     SceneObject {
-        body: SceneBody::Dynamic(Body {
+        body: Body {
+            body_type: BodyType::Dynamic,
             motion: Motion {
                 position: DVec3::new(0.0, east, -GROUND_ELEVATION - radius),
                 velocity,
             },
-            collider: Sphere { radius },
-        }),
+            collider: Collider::Sphere { radius },
+        },
         visual: Visual {
             shape: Shape::Sphere {
                 radius: radius as f32,
@@ -89,49 +96,48 @@ fn ball(east: f64, radius: f64, velocity: DVec3, color: Color) -> SceneObject {
 mod tests {
     use super::*;
 
-    /// The scenario's moving objects.
-    fn balls() -> Vec<(Body, Visual)> {
+    /// The scenario's objects with a body of type `body_type`.
+    fn objects(body_type: BodyType) -> Vec<SceneObject> {
         ball_throws()
             .objects
             .into_iter()
-            .filter_map(|object| match object.body {
-                SceneBody::Dynamic(body) => Some((body, object.visual)),
-                SceneBody::Static(_) => None,
-            })
+            .filter(|object| object.body.body_type == body_type)
             .collect()
     }
 
+    /// A ball's radius.
+    fn radius(ball: &SceneObject) -> f64 {
+        match ball.body.collider {
+            Collider::Sphere { radius } => radius,
+            Collider::HalfSpace => panic!("a ball is a sphere"),
+        }
+    }
+
     #[test]
-    fn there_are_three_balls_and_a_ground() {
-        let scene = ball_throws();
-        assert_eq!(balls().len(), 3);
-        let grounds: Vec<_> = scene
-            .objects
-            .iter()
-            .filter_map(|object| match object.body {
-                SceneBody::Static(StaticCollider::Ground { elevation }) => Some(elevation),
-                SceneBody::Dynamic(_) => None,
-            })
-            .collect();
-        assert_eq!(grounds, [GROUND_ELEVATION]);
+    fn there_are_three_balls_and_one_ground() {
+        assert_eq!(objects(BodyType::Dynamic).len(), 3);
+        let statics = objects(BodyType::Static);
+        assert_eq!(statics.len(), 1);
+        assert_eq!(statics[0].body.collider, Collider::HalfSpace);
+        assert_eq!(-statics[0].body.motion.position.z, GROUND_ELEVATION);
     }
 
     #[test]
     fn every_ball_starts_resting_on_the_ground() {
         // z is down: the centre is `radius` above the ground, at
         // z = -elevation.
-        for (body, _) in balls() {
+        for ball in objects(BodyType::Dynamic) {
             assert_eq!(
-                body.motion.position.z,
-                -GROUND_ELEVATION - body.collider.radius
+                ball.body.motion.position.z,
+                -GROUND_ELEVATION - radius(&ball)
             );
         }
     }
 
     #[test]
     fn every_ball_is_thrown_upwards() {
-        for (body, _) in balls() {
-            assert!(body.motion.velocity.z < 0.0); // -z is up
+        for ball in objects(BodyType::Dynamic) {
+            assert!(ball.body.motion.velocity.z < 0.0); // -z is up
         }
     }
 
@@ -140,22 +146,15 @@ mod tests {
         // Each drawn sphere has its collider's size, at render precision:
         // 0.4 isn't exact in binary, so f64 0.4 -> f32 -> f64 gives
         // 0.4000000059..., not 0.4. Compare in f32, what the GPU gets.
-        for (body, visual) in balls() {
-            assert_eq!(
-                visual.shape,
-                Shape::Sphere {
-                    radius: body.collider.radius as f32
-                }
-            );
+        for ball in objects(BodyType::Dynamic) {
+            let radius = radius(&ball) as f32;
+            assert_eq!(ball.visual.shape, Shape::Sphere { radius });
         }
     }
 
     #[test]
     fn the_camera_follows_a_ball() {
         let scene = ball_throws();
-        assert!(matches!(
-            scene.objects[scene.focus].body,
-            SceneBody::Dynamic(_)
-        ));
+        assert_eq!(scene.objects[scene.focus].body.body_type, BodyType::Dynamic);
     }
 }

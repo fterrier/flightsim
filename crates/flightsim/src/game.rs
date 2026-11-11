@@ -3,7 +3,7 @@
 
 use std::fmt::{self, Write};
 
-use engine::{Command, Game, InputEvent, Key, Scene, WorldView};
+use engine::{Collider, Command, Game, InputEvent, Key, Scene, WorldView};
 
 use crate::scenarios;
 
@@ -36,6 +36,11 @@ impl Game for FlightSim {
         // and climb rate are positive upwards.
         let body = &world.bodies[focus];
         let (position, velocity) = (body.motion.position, body.motion.velocity);
+        // Height of the object's bottom, so a resting ball reads 0.
+        let bottom = match body.collider {
+            Collider::Sphere { radius } => radius,
+            Collider::HalfSpace => 0.0, // its surface
+        };
         write!(
             out,
             "north = {:.1} m, east = {:.1} m\n\
@@ -46,7 +51,7 @@ impl Game for FlightSim {
             position.x,
             position.y,
             // Height of the bottom of the ball, so it reads 0 when resting.
-            -position.z - body.collider.radius,
+            -position.z - bottom,
             -velocity.z,
         )
     }
@@ -55,7 +60,7 @@ impl Game for FlightSim {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::{Body, DVec3, Motion, Sphere};
+    use engine::{Body, BodyType, DVec3, Motion};
 
     fn command(event: InputEvent) -> Option<Command> {
         FlightSim.command_for(event)
@@ -88,11 +93,12 @@ mod tests {
         // NED: 42 m north, 7 m east, centre 2.4 m up (z = -2.4), falling
         // at 3 m/s (+z is down).
         let ball = |north: f64, east: f64| Body {
+            body_type: BodyType::Dynamic,
             motion: Motion {
                 position: DVec3::new(north, east, -2.4),
                 velocity: DVec3::new(0.0, 0.0, 3.0),
             },
-            collider: Sphere { radius: 0.4 },
+            collider: Collider::Sphere { radius: 0.4 },
         };
         let bodies = [ball(1.0, 0.0), ball(42.0, 7.0)];
         let world = WorldView {
@@ -105,5 +111,24 @@ mod tests {
         assert!(out.contains("altitude = 2.0 m"), "{out}"); // bottom of the ball
         assert!(out.contains("climb rate = -3.0 m/s"), "{out}"); // falling
         assert!(out.contains("R: throw again"), "{out}");
+    }
+
+    #[test]
+    fn hud_altitude_of_a_ground_is_its_surface() {
+        let plateau = Body {
+            body_type: BodyType::Static,
+            motion: Motion {
+                position: DVec3::new(0.0, 0.0, -12.0),
+                velocity: DVec3::ZERO,
+            },
+            collider: Collider::HalfSpace,
+        };
+        let world = WorldView {
+            time: 0.0,
+            bodies: &[plateau],
+        };
+        let mut out = String::new();
+        FlightSim.write_hud(world, 0, &mut out).unwrap();
+        assert!(out.contains("altitude = 12.0 m"), "{out}");
     }
 }

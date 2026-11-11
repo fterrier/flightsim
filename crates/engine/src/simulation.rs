@@ -105,38 +105,31 @@ fn positions(world: &World) -> impl Iterator<Item = DVec3> + '_ {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use physics::{Body, Motion, STANDARD_GRAVITY, Sphere, StaticCollider};
+    use physics::{Body, BodyType, Collider, Motion};
 
-    /// Flat ground at sea level.
-    const GROUND: StaticCollider = StaticCollider::Ground { elevation: 0.0 };
+    /// No gravity, and so no ground needed: balls just slide.
+    const NO_GRAVITY: DVec3 = DVec3::ZERO;
 
     /// Exact in binary floating point, so step counts and positions below
     /// can be compared exactly.
     const DT: f64 = 1.0 / 64.0;
     const RADIUS: f64 = 0.5;
 
-    /// A ball resting on the ground `north` metres north, sliding north at
-    /// `speed` (m/s); the ground stops gravity from moving it vertically.
+    /// A ball `north` metres north, sliding north at `speed` (m/s).
     fn sliding_ball(north: f64, speed: f64) -> Body {
         Body {
+            body_type: BodyType::Dynamic,
             motion: Motion {
                 position: DVec3::new(north, 0.0, -RADIUS),
                 velocity: DVec3::new(speed, 0.0, 0.0),
             },
-            collider: Sphere { radius: RADIUS },
+            collider: Collider::Sphere { radius: RADIUS },
         }
     }
 
     /// One ball sliding at 64 m/s: exactly 1 m per step.
     fn one_ball() -> Simulation {
-        Simulation::new(
-            World::new(
-                vec![sliding_ball(0.0, 64.0)],
-                vec![GROUND],
-                STANDARD_GRAVITY,
-            ),
-            DT,
-        )
+        Simulation::new(World::new(vec![sliding_ball(0.0, 64.0)], NO_GRAVITY), DT)
     }
 
     fn drawn_x(sim: &Simulation) -> Vec<f64> {
@@ -196,8 +189,7 @@ mod tests {
     fn every_body_is_interpolated_with_its_own_previous_position() {
         let world = World::new(
             vec![sliding_ball(0.0, 64.0), sliding_ball(10.0, -128.0)],
-            vec![GROUND],
-            STANDARD_GRAVITY,
+            NO_GRAVITY,
         );
         let mut sim = Simulation::new(world, DT);
         sim.advance(2.5 * DT);

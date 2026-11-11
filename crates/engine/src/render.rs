@@ -19,10 +19,10 @@
 //!   behind Unreal's "null RHI").
 
 use glam::{Vec2, Vec3};
-use physics::{DVec2, DVec3, StaticCollider};
+use physics::{DVec2, DVec3};
 
 use crate::camera::Camera;
-use crate::scene::{Scene, SceneBody};
+use crate::scene::Scene;
 use crate::simulation::Simulation;
 
 /// A colour, in *linear* light (how much light, not how bright it looks).
@@ -52,8 +52,8 @@ pub enum Shape {
     Sphere {
         radius: f32,
     },
-    /// A ground drawn as a grid of lines, at its static collider's
-    /// elevation.
+    /// A ground drawn as a grid of lines, on the horizontal plane through
+    /// its object's position.
     Grid(GroundGrid),
 }
 
@@ -143,13 +143,12 @@ const MINOR_LINE_WIDTH: f32 = 1.0;
 
 /// How one scene object is drawn.
 enum Drawable {
-    /// A retained render proxy that follows body number `body`.
-    Proxy { proxy: ProxyId, body: usize },
+    /// A retained render proxy, moved every frame.
+    Proxy(ProxyId),
     /// A ground grid, re-drawn every frame around the camera.
     Grid {
         grid: GroundGrid,
         major_color: Color,
-        elevation: f64,
     },
 }
 
@@ -157,7 +156,7 @@ enum Drawable {
 /// a given camera. (The camera itself is a game-side object, as in engines;
 /// the HUD is a separate overlay, see `hud`.)
 pub(crate) struct Renderer {
-    /// One per scene object, in scene order.
+    /// One per scene object, in scene order: drawable `i` shows body `i`.
     // TODO(step-11): keyed by entity ID instead of index; created when an
     // entity spawns, freed when it despawns (like Godot's `free_rid`).
     drawables: Vec<Drawable>,
@@ -171,23 +170,14 @@ impl Renderer {
         let drawables = scene
             .objects
             .iter()
-            .enumerate()
-            .map(|(index, object)| match (object.visual.shape, object.body) {
-                (Shape::Sphere { radius }, SceneBody::Dynamic(_)) => Drawable::Proxy {
-                    proxy: backend.create_sphere(radius, object.visual.color),
-                    body: scene
-                        .body_index(index)
-                        .expect("a dynamic object has a body"),
-                },
-                (Shape::Grid(grid), SceneBody::Static(StaticCollider::Ground { elevation })) => {
-                    Drawable::Grid {
-                        grid,
-                        major_color: object.visual.color,
-                        elevation,
-                    }
+            .map(|object| match object.visual.shape {
+                Shape::Sphere { radius } => {
+                    Drawable::Proxy(backend.create_sphere(radius, object.visual.color))
                 }
-                // TODO(step-09): scene validation reports this as an error.
-                (shape, body) => panic!("object {index}: can't draw a {shape:?} for a {body:?}"),
+                Shape::Grid(grid) => Drawable::Grid {
+                    grid,
+                    major_color: object.visual.color,
+                },
             })
             .collect();
         Self { drawables }
@@ -206,17 +196,13 @@ impl Renderer {
         //  in one loop over all objects.
         //  TODO(step-08): orientations too (position + rotation).
         // ═══════════════════════════════════════════════════════════════
-        for drawable in &self.drawables {
+        for (body, drawable) in self.drawables.iter().enumerate() {
+            let position = sim.drawn_position(body);
             match drawable {
-                Drawable::Proxy { proxy, body } => {
-                    backend.set_position(*proxy, to_render(sim.drawn_position(*body)));
-                }
-                Drawable::Grid {
-                    grid,
-                    major_color,
-                    elevation,
-                } => {
-                    for line in grid_lines(camera.target.truncate(), grid, *elevation) {
+                Drawable::Proxy(proxy) => backend.set_position(*proxy, to_render(position)),
+                Drawable::Grid { grid, major_color } => {
+                    // Under the camera's target, at the object's altitude.
+                    for line in grid_lines(camera.target.truncate(), grid, -position.z) {
                         let (color, width) = if line.major {
                             (*major_color, MAJOR_LINE_WIDTH)
                         } else {
@@ -378,7 +364,7 @@ mod tests {
     use super::fakes::RecordingBackend;
     use super::*;
     use crate::scene::SceneObject;
-    use physics::{Body, Motion, STANDARD_GRAVITY, Sphere};
+    use physics::{Body, BodyType, Collider, Motion, STANDARD_GRAVITY};
 
     const BALL: Visual = Visual {
         shape: Shape::Sphere { radius: 0.4 },
@@ -396,18 +382,15 @@ mod tests {
     /// drawn positions are exact.
     fn ball_at(north: f64, east: f64) -> SceneObject {
         SceneObject {
-            body: SceneBody::Dynamic(ball_body(north, east)),
-            visual: BALL,
-        }
-    }
-
-    fn ball_body(north: f64, east: f64) -> Body {
-        Body {
-            motion: Motion {
-                position: DVec3::new(north, east, -0.4),
-                velocity: DVec3::ZERO,
+            body: Body {
+                body_type: BodyType::Dynamic,
+                motion: Motion {
+                    position: DVec3::new(north, east, -0.4),
+                    velocity: DVec3::ZERO,
+                },
+                collider: Collider::Sphere { radius: 0.4 },
             },
-            collider: Sphere { radius: 0.4 },
+            visual: BALL,
         }
     }
 
@@ -423,7 +406,14 @@ mod tests {
     /// Flat ground at `elevation` metres, drawn as `grid`.
     fn ground(elevation: f64, grid: GroundGrid) -> SceneObject {
         SceneObject {
-            body: SceneBody::Static(StaticCollider::Ground { elevation }),
+            body: Body {
+                body_type: BodyType::Static,
+                motion: Motion {
+                    position: DVec3::new(0.0, 0.0, -elevation),
+                    velocity: DVec3::ZERO,
+                },
+                collider: Collider::HalfSpace,
+            },
             visual: Visual {
                 shape: Shape::Grid(grid),
                 color: MAJOR,
@@ -496,7 +486,7 @@ mod tests {
     #[test]
     fn each_proxy_is_placed_where_the_simulation_says() {
         let mut backend = RecordingBackend::new(SCREEN);
-        // The ground in between: object 2 is body 1.
+        // The ground in between, to check each proxy follows its own body.
         let objects = vec![ball_at(1.0, 2.0), ground(0.0, GRID), ball_at(-3.0, 4.0)];
         let (sim, renderer, camera) = setup(&scene(objects), &mut backend, DVec3::ZERO);
         renderer.draw(&mut backend, &sim, &camera);
@@ -618,29 +608,6 @@ mod tests {
                 -50.0, -40.0, -30.0, -20.0, -10.0, 0.0, 10.0, 20.0, 30.0, 40.0, 50.0
             ]
         );
-    }
-
-    #[test]
-    #[should_panic(expected = "object 0: can't draw a Grid")]
-    fn a_moving_grid_is_rejected() {
-        // Grids are drawn at a static ground's elevation: a body has none.
-        let grid_ball = SceneObject {
-            body: SceneBody::Dynamic(ball_body(0.0, 0.0)),
-            visual: ground(0.0, GRID).visual,
-        };
-        Renderer::new(&mut RecordingBackend::new(SCREEN), &scene(vec![grid_ball]));
-    }
-
-    #[test]
-    #[should_panic(expected = "object 1: can't draw a Sphere")]
-    fn a_ground_drawn_as_a_sphere_is_rejected() {
-        // Spheres follow a body, and the ground has none.
-        let ball_ground = SceneObject {
-            visual: BALL,
-            ..ground(0.0, GRID)
-        };
-        let scene = scene(vec![ball_at(0.0, 0.0), ball_ground]);
-        Renderer::new(&mut RecordingBackend::new(SCREEN), &scene);
     }
 
     #[test]

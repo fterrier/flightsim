@@ -105,17 +105,18 @@ Rules:
    `engine/src/render.rs`.
 6. **Content is data.** A scene (a "level", defined by the game) lists
    everything that exists as objects, *the ground included*: as in
-   engines (Godot's `StaticBody3D`, Avian's `RigidBody::Static`), the
-   ground is a static object, not an engine built-in. Each object is
-   described whole: its body, dynamic (motion + collider) or static (a
-   collider that never moves), for the simulation, and its `Visual`
-   (shape + colour, later a glTF mesh + material) for the renderer. Only
-   what exists nowhere in particular (background, gravity) is a scene
-   setting. Loading splits objects: dynamic ones become physics bodies,
-   static ones static colliders, visuals become render proxies or grid
-   lines (entity IDs replace the index bookkeeping at step 11). The game
-   loop never knows what's inside, and the render interface has a few
-   generic operations that never grow with content: no `draw_plane`.
+   physics engines (Rapier's fixed bodies, Jolt's static motion type,
+   Godot's `StaticBody3D`), the ground is a body that never moves, not
+   an engine built-in. Each object is described whole: its `Body` (type,
+   motion, collider) for the simulation and its `Visual` (shape +
+   colour, later a glTF mesh + material) for the renderer. Only what
+   exists nowhere in particular (background, gravity) is a scene
+   setting. Loading splits objects, keeping one index everywhere: object
+   `i` becomes physics body `i` and drawable `i` (stable entity IDs
+   replace the index at step 11, when objects can come and go). The
+   game loop never knows what's inside, and the render interface has a
+   few generic operations that never grow with content: no
+   `draw_plane`.
 
 ## Decisions
 
