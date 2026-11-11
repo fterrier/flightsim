@@ -129,7 +129,8 @@ mod tests {
 
     /// One ball sliding at 64 m/s: exactly 1 m per step.
     fn one_ball() -> Simulation {
-        Simulation::new(World::new(vec![sliding_ball(0.0, 64.0)], NO_GRAVITY), DT)
+        let world = World::new(vec![sliding_ball(0.0, 64.0)], NO_GRAVITY);
+        Simulation::new(world.expect("valid bodies"), DT)
     }
 
     fn drawn_x(sim: &Simulation) -> Vec<f64> {
@@ -191,7 +192,7 @@ mod tests {
             vec![sliding_ball(0.0, 64.0), sliding_ball(10.0, -128.0)],
             NO_GRAVITY,
         );
-        let mut sim = Simulation::new(world, DT);
+        let mut sim = Simulation::new(world.expect("valid bodies"), DT);
         sim.advance(2.5 * DT);
         // Ball 0: 1 m -> 2 m; ball 1: 8 m -> 6 m; drawn halfway.
         assert_eq!(drawn_x(&sim), [1.5, 7.0]);

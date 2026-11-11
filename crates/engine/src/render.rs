@@ -443,7 +443,7 @@ mod tests {
         backend: &mut RecordingBackend,
         target: DVec3,
     ) -> (Simulation, Renderer, Camera) {
-        let sim = Simulation::new(scene.world(), 1.0 / 64.0);
+        let sim = Simulation::new(scene.world().expect("a valid scene"), 1.0 / 64.0);
         (sim, Renderer::new(backend, scene), Camera::new(target))
     }
 

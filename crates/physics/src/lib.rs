@@ -18,6 +18,8 @@
 /// east) quantities.
 pub use glam::{DVec2, DVec3};
 
+use std::fmt;
+
 /// Standard gravity at the Earth's surface, in m/s², pointing down (+z in
 /// NED): the usual value for a [`World`]'s `gravity`.
 ///
@@ -59,8 +61,21 @@ pub enum Collider {
     Sphere { radius: f64 },
     /// Everything below a horizontal plane through the body's position:
     /// an endless flat ground. Rapier calls it a half-space, Jolt a plane
-    /// shape, Godot a world boundary.
+    /// shape, Godot a world boundary. Static bodies only.
     HalfSpace,
+}
+
+impl Collider {
+    /// Whether only a static body can have this shape. An endless
+    /// half-space has no finite mass or centre: it can't be moved by
+    /// forces. Jolt has the same check (`Shape::MustBeStatic`; "planes
+    /// cannot be dynamic objects").
+    pub fn must_be_static(self) -> bool {
+        match self {
+            Collider::Sphere { .. } => false,
+            Collider::HalfSpace => true,
+        }
+    }
 }
 
 /// A simulated object: whether it moves, how, and what it bumps into.
@@ -101,13 +116,45 @@ pub struct World {
     pub bodies: Vec<Body>,
 }
 
+/// Why a world can't be created.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum WorldError {
+    /// Body number `body` is dynamic, but its collider can only be static
+    /// (see [`Collider::must_be_static`]).
+    MustBeStatic { body: usize },
+}
+
+impl fmt::Display for WorldError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            WorldError::MustBeStatic { body } => {
+                write!(
+                    f,
+                    "body {body} is dynamic, but its collider can only be static"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for WorldError {}
+
 impl World {
-    pub fn new(bodies: Vec<Body>, gravity: DVec3) -> Self {
-        Self {
+    /// A world at time zero, if every body makes sense (see
+    /// [`WorldError`]): checked once here, so `step` never meets a body it
+    /// can't simulate.
+    pub fn new(bodies: Vec<Body>, gravity: DVec3) -> Result<Self, WorldError> {
+        let moving_plane = bodies
+            .iter()
+            .position(|body| body.body_type == BodyType::Dynamic && body.collider.must_be_static());
+        if let Some(body) = moving_plane {
+            return Err(WorldError::MustBeStatic { body });
+        }
+        Ok(Self {
             time: 0.0,
             gravity,
             bodies,
-        }
+        })
     }
 
     /// Simulated time since the start, in seconds.
@@ -123,27 +170,40 @@ impl World {
     // argument here; physics reads them but never polls a keyboard.
     pub fn step(&mut self, dt: f64) {
         // Each system runs over every body, taking only the components it
-        // needs. Indices, not iterators: a body is moved while reading
-        // others in the same list.
-        for i in 0..self.bodies.len() {
-            if self.bodies[i].body_type == BodyType::Static {
-                continue;
+        // needs. First everything moves...
+        for body in &mut self.bodies {
+            if body.body_type == BodyType::Dynamic {
+                // TODO(step-06): add aerodynamic forces (lift, drag) and
+                // thrust.
+                integrate(&mut body.motion, self.gravity, dt);
             }
-            // TODO(step-06): add aerodynamic forces (lift, drag) and thrust.
-            integrate(&mut self.bodies[i].motion, self.gravity, dt);
-            // Every pair of shapes checked: fine for a handful of bodies.
-            // TODO(step-12): collisions between all shapes (balls bumping
-            // into each other), with a broad phase to skip far-apart pairs.
+        }
+
+        // ...then collisions are found and resolved, in two separate
+        // stages as in every physics engine: *detection* (`contact`, per
+        // pair of shapes) says where two bodies overlap, *response*
+        // (`resolve`) acts on that, whatever the shapes.
+        //
+        // Each moving body against each static one; every pair is tried,
+        // fine for a handful of bodies.
+        // TODO(step-12): moving bodies against each other too (the push is
+        // then shared according to their masses), with a broad phase to
+        // skip far-apart pairs.
+        //
+        // Indices, not iterators: a body is moved while reading another
+        // in the same list.
+        for i in 0..self.bodies.len() {
             for j in 0..self.bodies.len() {
                 // A copy (a few dozen bytes on the stack), so `bodies[i]`
                 // can be borrowed mutably next.
                 let other = self.bodies[j];
                 let body = &mut self.bodies[i];
-                if let (BodyType::Static, Collider::HalfSpace, Collider::Sphere { radius }) =
-                    (other.body_type, other.collider, body.collider)
-                {
-                    let elevation = -other.motion.position.z;
-                    ground_contact(&mut body.motion, radius, elevation);
+                if body.body_type != BodyType::Dynamic || other.body_type != BodyType::Static {
+                    continue;
+                }
+                let (a, b) = (&body.motion.position, &other.motion.position);
+                if let Some(contact) = contact(body.collider, *a, other.collider, *b) {
+                    resolve(&mut body.motion, contact);
                 }
             }
         }
@@ -170,23 +230,85 @@ fn integrate(motion: &mut Motion, acceleration: DVec3, dt: f64) {
     motion.position += motion.velocity * dt;
 }
 
-/// Keeps something moving with `motion`, a sphere of `radius` metres, from
-/// going through a flat ground at `elevation` metres (the plane
-/// z = -elevation; z is down, so "below the ground" means a larger z).
+/// Where two colliders overlap: what collision detection reports, and all
+/// that collision response needs, whatever the shapes (as Parry's
+/// `Contact`, used by Rapier).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Contact {
+    /// Unit vector (NED) along which the first collider must move to get
+    /// out of the second.
+    normal: DVec3,
+    /// How deep they overlap, in metres (positive).
+    depth: f64,
+}
+
+impl Contact {
+    /// The same contact seen from the other collider.
+    fn flipped(self) -> Self {
+        Self {
+            normal: -self.normal,
+            ..self
+        }
+    }
+}
+
+/// Collision detection (the "narrow phase"): whether collider `a`, placed
+/// at `at_a`, overlaps collider `b`, placed at `at_b` (NED, metres), and
+/// how. One function per pair of shape types.
+fn contact(a: Collider, at_a: DVec3, b: Collider, at_b: DVec3) -> Option<Contact> {
+    match (a, b) {
+        (Collider::Sphere { radius: ra }, Collider::Sphere { radius: rb }) => {
+            sphere_sphere(at_a, ra, at_b, rb)
+        }
+        (Collider::Sphere { radius }, Collider::HalfSpace) => sphere_half_space(at_a, radius, at_b),
+        (Collider::HalfSpace, Collider::Sphere { radius }) => {
+            sphere_half_space(at_b, radius, at_a).map(Contact::flipped)
+        }
+        // Never asked by `step`: both would be static (`World::new`
+        // checks it).
+        (Collider::HalfSpace, Collider::HalfSpace) => None,
+    }
+}
+
+/// A sphere of `radius` centred at `centre`, against a half-space whose
+/// surface passes through `surface` (NED, metres).
+fn sphere_half_space(centre: DVec3, radius: f64, surface: DVec3) -> Option<Contact> {
+    // z is down: the centre is `surface.z - centre.z` above the surface.
+    let height = surface.z - centre.z;
+    let depth = radius - height;
+    (depth > 0.0).then_some(Contact {
+        normal: DVec3::NEG_Z, // up
+        depth,
+    })
+}
+
+/// Two spheres, of radii `ra` and `rb`, centred at `a` and `b` (NED,
+/// metres).
+fn sphere_sphere(a: DVec3, ra: f64, b: DVec3, rb: f64) -> Option<Contact> {
+    let apart = a - b;
+    let distance = apart.length();
+    let depth = ra + rb - distance;
+    // Exactly the same centre: any direction would do; up is as good as
+    // any (and gets a ball out of a static sphere on the ground).
+    let normal = apart.try_normalize().unwrap_or(DVec3::NEG_Z);
+    (depth > 0.0).then_some(Contact { normal, depth })
+}
+
+/// Collision response, against something static: pushes a moving body out
+/// along the contact normal and cancels its velocity into the surface. A
+/// perfectly inelastic impact, no bounce; sliding along the surface is
+/// kept, as there's no friction yet.
 ///
 /// Integration moves in discrete jumps, so a falling ball ends up slightly
-/// *inside* the ground on the step it lands. We push it back on top and
-/// cancel its downward speed: a perfectly inelastic impact, no bounce.
-/// Sideways motion is kept, as there's no friction yet.
-// TODO(step-12): replace with landing gear contacts: spring-damper forces
-// at each wheel, plus rolling friction and brakes.
-fn ground_contact(motion: &mut Motion, radius: f64, elevation: f64) {
-    // The centre must stay `radius` above the ground.
-    let lowest = -elevation - radius;
-    if motion.position.z > lowest {
-        motion.position.z = lowest;
-        // Cancel downward (+z) speed, keep any upward (-z) speed.
-        motion.velocity.z = motion.velocity.z.min(0.0);
+/// *inside* the ground on the step it lands: that overlap is the contact's
+/// depth.
+// TODO(step-12): spring-damper forces instead (landing gear), with rolling
+// friction and brakes.
+fn resolve(motion: &mut Motion, contact: Contact) {
+    motion.position += contact.normal * contact.depth;
+    let into = motion.velocity.dot(contact.normal);
+    if into < 0.0 {
+        motion.velocity -= contact.normal * into;
     }
 }
 
@@ -239,6 +361,11 @@ mod tests {
             },
             collider: Collider::Sphere { radius },
         }
+    }
+
+    /// A world of valid `bodies` (tests build it from known-good bodies).
+    fn world(bodies: Vec<Body>, gravity: DVec3) -> World {
+        World::new(bodies, gravity).expect("valid bodies")
     }
 
     /// Integrates `motion` under gravity alone (no ground) for `seconds`.
@@ -320,36 +447,116 @@ mod tests {
         assert_eq!(motion.velocity.truncate(), DVec2::new(5.0, -3.0));
     }
 
+    /// Positions after a collision response are compared within 1e-12 m:
+    /// the push-out is computed from the overlap depth, a difference of
+    /// nearly equal numbers, which rounds in the last bits.
+    const PUSH_TOLERANCE: f64 = 1e-12;
+
+    const SPHERE: Collider = Collider::Sphere { radius: RADIUS };
+    const BIG_SPHERE: Collider = Collider::Sphere { radius: 1.0 };
+
     #[test]
-    fn ground_contact_puts_a_sunken_ball_back_on_the_ground() {
-        // Its centre is 0.1 m *below* the ground (z = +0.1), falling.
+    fn a_sunken_ball_touches_the_ground_with_an_upward_normal() {
+        // Its centre is 0.1 m *below* the ground at sea level (z = +0.1):
+        // its bottom is 0.5 m deep.
+        let contact = contact(
+            SPHERE,
+            DVec3::new(3.0, 4.0, 0.1),
+            Collider::HalfSpace,
+            DVec3::ZERO,
+        )
+        .expect("they overlap");
+        assert_eq!(contact.normal, DVec3::NEG_Z);
+        assert!((contact.depth - (RADIUS + 0.1)).abs() < PUSH_TOLERANCE);
+    }
+
+    #[test]
+    fn a_ball_in_the_air_does_not_touch_the_ground() {
+        assert_eq!(
+            contact(SPHERE, thrown().position, Collider::HalfSpace, DVec3::ZERO),
+            None
+        );
+    }
+
+    #[test]
+    fn the_ground_surface_passes_through_its_body_position() {
+        // Ground 10 m up (z = -10); a ball centred 9.5 m up has its bottom
+        // at 9.1 m: 0.9 m deep.
+        let surface = DVec3::new(50.0, 50.0, -10.0); // only its height matters
+        let contact = contact(
+            SPHERE,
+            DVec3::new(0.0, 0.0, -9.5),
+            Collider::HalfSpace,
+            surface,
+        )
+        .expect("they overlap");
+        assert!((contact.depth - 0.9).abs() < PUSH_TOLERANCE);
+    }
+
+    #[test]
+    fn overlapping_spheres_are_pushed_apart_along_the_line_between_centres() {
+        // 1 m apart east-west, radii 0.4 + 1: 0.4 m of overlap. The first
+        // is east of the second: it must move further east.
+        let contact = contact(SPHERE, DVec3::new(0.0, 1.0, 0.0), BIG_SPHERE, DVec3::ZERO)
+            .expect("they overlap");
+        assert_eq!(contact.normal, DVec3::Y);
+        assert!((contact.depth - 0.4).abs() < PUSH_TOLERANCE);
+    }
+
+    #[test]
+    fn spheres_apart_do_not_touch() {
+        assert_eq!(
+            contact(SPHERE, DVec3::new(0.0, 2.0, 0.0), BIG_SPHERE, DVec3::ZERO),
+            None
+        );
+    }
+
+    #[test]
+    fn spheres_with_the_same_centre_are_pushed_apart_upwards() {
+        // No line between the centres: any direction would do.
+        let contact = contact(SPHERE, DVec3::ZERO, BIG_SPHERE, DVec3::ZERO).expect("they overlap");
+        assert_eq!(contact.normal, DVec3::NEG_Z);
+    }
+
+    #[test]
+    fn detection_works_either_way_round() {
+        let ball = DVec3::new(0.0, 0.0, 0.1);
+        let ball_vs_ground = contact(SPHERE, ball, Collider::HalfSpace, DVec3::ZERO);
+        let ground_vs_ball = contact(Collider::HalfSpace, DVec3::ZERO, SPHERE, ball);
+        assert_eq!(ground_vs_ball, ball_vs_ground.map(Contact::flipped));
+        // Two endless planes never meet in a world: both would be static.
+        let plane = Collider::HalfSpace;
+        assert_eq!(contact(plane, DVec3::ZERO, plane, DVec3::ZERO), None);
+    }
+
+    #[test]
+    fn response_pushes_out_and_cancels_the_velocity_into_the_surface() {
         let mut motion = Motion {
             position: DVec3::new(3.0, 4.0, 0.1),
-            velocity: DVec3::new(5.0, 6.0, 2.0),
+            velocity: DVec3::new(5.0, 6.0, 2.0), // falling
         };
-        ground_contact(&mut motion, RADIUS, 0.0);
-        assert_eq!(motion.position, DVec3::new(3.0, 4.0, -RADIUS));
+        let contact = Contact {
+            normal: DVec3::NEG_Z,
+            depth: 0.5,
+        };
+        resolve(&mut motion, contact);
+        assert!((motion.position - DVec3::new(3.0, 4.0, -0.4)).length() < PUSH_TOLERANCE);
         // Falling stops; no friction yet, so it keeps sliding.
         assert_eq!(motion.velocity, DVec3::new(5.0, 6.0, 0.0));
     }
 
     #[test]
-    fn ground_contact_ignores_a_ball_in_the_air() {
-        let mut motion = thrown();
-        ground_contact(&mut motion, RADIUS, 0.0);
-        assert_eq!(motion, thrown());
-    }
-
-    #[test]
-    fn ground_contact_respects_the_ground_elevation() {
-        // Ground 10 m up (z = -10): the ball's centre stops at z = -10.4.
+    fn response_keeps_a_velocity_already_leaving_the_surface() {
         let mut motion = Motion {
-            position: DVec3::new(0.0, 0.0, -9.0),
-            velocity: DVec3::new(0.0, 0.0, 2.0),
+            position: DVec3::ZERO,
+            velocity: DVec3::new(1.0, 0.0, -3.0), // going up
         };
-        ground_contact(&mut motion, RADIUS, 10.0);
-        assert_eq!(motion.position.z, -10.0 - RADIUS);
-        assert_eq!(motion.velocity.z, 0.0);
+        let contact = Contact {
+            normal: DVec3::NEG_Z,
+            depth: 0.1,
+        };
+        resolve(&mut motion, contact);
+        assert_eq!(motion.velocity, DVec3::new(1.0, 0.0, -3.0));
     }
 
     #[test]
@@ -357,7 +564,7 @@ mod tests {
         // The ground is not built in: it's a static body the world may or
         // may not have (like a Rapier fixed body or a Godot StaticBody3D),
         // placed by the scene.
-        let mut world = World::new(vec![thrown_ball()], STANDARD_GRAVITY);
+        let mut world = world(vec![thrown_ball()], STANDARD_GRAVITY);
         for _ in 0..600 {
             world.step(DT);
         }
@@ -369,7 +576,7 @@ mod tests {
 
     #[test]
     fn a_raised_ground_holds_bodies_at_its_elevation() {
-        let mut world = World::new(vec![ground(10.0), thrown_ball()], STANDARD_GRAVITY);
+        let mut world = world(vec![ground(10.0), thrown_ball()], STANDARD_GRAVITY);
         for _ in 0..600 {
             world.step(DT);
         }
@@ -378,11 +585,59 @@ mod tests {
     }
 
     #[test]
+    fn a_static_sphere_is_an_obstacle() {
+        // No gravity: a ball slides east at 2 m/s into a static sphere of
+        // 1 m radius, 5 m east. It stops touching it (centres 1.4 m apart),
+        // its eastward speed cancelled.
+        let ball = Body {
+            motion: Motion {
+                position: DVec3::ZERO,
+                velocity: DVec3::new(0.0, 2.0, 0.0),
+            },
+            ..thrown_ball()
+        };
+        let rock = Body {
+            body_type: BodyType::Static,
+            motion: Motion {
+                position: DVec3::new(0.0, 5.0, 0.0),
+                velocity: DVec3::ZERO,
+            },
+            collider: BIG_SPHERE,
+        };
+        let mut world = world(vec![ball, rock], DVec3::ZERO);
+        for _ in 0..(5 * 120) {
+            world.step(DT);
+        }
+        let ball = world.bodies[0].motion;
+        assert!((ball.position.y - (5.0 - 1.0 - RADIUS)).abs() < PUSH_TOLERANCE);
+        assert!(ball.velocity.y.abs() < PUSH_TOLERANCE);
+        assert_eq!(world.bodies[1], rock);
+    }
+
+    #[test]
+    fn a_moving_half_space_is_rejected() {
+        let mut falling_ground = ground(0.0);
+        falling_ground.body_type = BodyType::Dynamic;
+        let error = World::new(vec![thrown_ball(), falling_ground], STANDARD_GRAVITY);
+        assert_eq!(error, Err(WorldError::MustBeStatic { body: 1 }));
+        assert_eq!(
+            error.unwrap_err().to_string(),
+            "body 1 is dynamic, but its collider can only be static"
+        );
+    }
+
+    #[test]
+    fn only_half_spaces_must_be_static() {
+        assert!(Collider::HalfSpace.must_be_static());
+        assert!(!SPHERE.must_be_static());
+    }
+
+    #[test]
     fn static_bodies_never_move() {
         // Not even with a velocity, under gravity: static means static.
         let mut moving_ground = ground(0.0);
         moving_ground.motion.velocity = DVec3::new(1.0, 2.0, 3.0);
-        let mut world = World::new(vec![moving_ground], STANDARD_GRAVITY);
+        let mut world = world(vec![moving_ground], STANDARD_GRAVITY);
         for _ in 0..120 {
             world.step(DT);
         }
@@ -393,7 +648,7 @@ mod tests {
     fn every_static_ground_applies() {
         // Two grounds: the higher one wins, as the ball lands on it first.
         let bodies = vec![ground(0.0), thrown_ball(), ground(5.0)];
-        let mut world = World::new(bodies, STANDARD_GRAVITY);
+        let mut world = world(bodies, STANDARD_GRAVITY);
         for _ in 0..600 {
             world.step(DT);
         }
@@ -404,7 +659,7 @@ mod tests {
     fn gravity_is_a_setting_of_the_world() {
         // Rapier and Box2D make gravity a world parameter too: the engine
         // assumes no planet. Without gravity, a thrown ball flies straight.
-        let mut world = World::new(vec![thrown_ball(), ground(0.0)], DVec3::ZERO);
+        let mut world = world(vec![thrown_ball(), ground(0.0)], DVec3::ZERO);
         for _ in 0..120 {
             world.step(DT);
         }
@@ -421,7 +676,7 @@ mod tests {
     #[test]
     fn world_starts_at_time_zero_with_its_bodies() {
         let bodies = vec![ground(0.0), thrown_ball(), resting_ball(5.0, 1.0)];
-        let world = World::new(bodies.clone(), STANDARD_GRAVITY);
+        let world = world(bodies.clone(), STANDARD_GRAVITY);
         assert_eq!(world.time(), 0.0);
         assert_eq!(world.bodies, bodies);
     }
@@ -430,7 +685,7 @@ mod tests {
     fn ball_lands_at_the_free_fall_time_and_stays_on_the_ground() {
         // Its centre falls h = 20 m - radius, which takes t = sqrt(2h/g).
         let impact = (2.0 * (20.0 - RADIUS) / G).sqrt();
-        let mut world = World::new(vec![thrown_ball(), ground(0.0)], STANDARD_GRAVITY);
+        let mut world = world(vec![thrown_ball(), ground(0.0)], STANDARD_GRAVITY);
         let altitude = |world: &World| -world.bodies[0].motion.position.z;
 
         while world.time() < impact - 2.0 * DT {
@@ -453,7 +708,7 @@ mod tests {
     #[test]
     fn every_body_is_simulated_with_its_own_collider() {
         let bodies = vec![thrown_ball(), resting_ball(5.0, 1.0), ground(0.0)];
-        let mut world = World::new(bodies, STANDARD_GRAVITY);
+        let mut world = world(bodies, STANDARD_GRAVITY);
         for _ in 0..120 {
             world.step(DT);
         }
@@ -469,8 +724,8 @@ mod tests {
         // Two worlds fed the same steps must be bit-identical (assert_eq!,
         // not a tolerance). Replays in step 10 rely on this.
         let bodies = vec![ground(0.0), thrown_ball(), resting_ball(5.0, 1.0)];
-        let mut a = World::new(bodies.clone(), STANDARD_GRAVITY);
-        let mut b = World::new(bodies, STANDARD_GRAVITY);
+        let mut a = world(bodies.clone(), STANDARD_GRAVITY);
+        let mut b = world(bodies, STANDARD_GRAVITY);
         for _ in 0..1000 {
             a.step(DT);
             b.step(DT);

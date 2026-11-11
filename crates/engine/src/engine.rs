@@ -14,6 +14,8 @@
 use std::fmt::{self, Write};
 use std::time::Duration;
 
+use physics::World;
+
 use crate::camera::Camera;
 use crate::hud::{FrameStats, Hud};
 use crate::input::{Command, InputEvent, Mouse, RawInput};
@@ -29,7 +31,7 @@ pub trait Game {
     /// setting, like Godot's "physics ticks per second".
     fn physics_dt(&self) -> f64;
 
-    /// The scene to load at start, and again on `Command::Restart`.
+    /// The scene to load at start; `Command::Restart` goes back to it.
     fn scene(&self) -> Scene;
 
     /// Input bindings: the command an input event triggers, if any. They
@@ -86,8 +88,10 @@ impl DebugLag {
 
 pub struct Engine<G: Game> {
     game: G,
-    /// The loaded scene, kept to reload it on restart.
-    scene: Scene,
+    /// The world as the scene starts, kept to start again on restart.
+    start: World,
+    /// Index of the object (and body) the camera follows.
+    focus: usize,
     sim: Simulation,
     /// Where to look from, and how far: follows the scene's focus.
     camera: Camera,
@@ -106,16 +110,20 @@ impl<G: Game> Engine<G> {
     /// Loads the game's scene and prepares the first frame (the platform
     /// shows one before the first `frame` call).
     pub fn new(backend: &mut impl RenderBackend, game: G) -> Self {
-        // TODO(step-09): once scenes come from files, validate them here
-        // (`focus` in range) and report a clear error instead of panicking
-        // on an index.
+        // TODO(step-09): once scenes come from files, also check `focus`
+        // is in range, and report errors to the player instead of
+        // panicking.
         let scene = game.scene();
-        let sim = Simulation::new(scene.world(), game.physics_dt());
+        let start = scene
+            .world()
+            .unwrap_or_else(|error| panic!("invalid scene: {error}"));
+        let sim = Simulation::new(start.clone(), game.physics_dt());
         let camera = Camera::new(scene.objects[scene.focus].body.motion.position);
         let renderer = Renderer::new(backend, &scene);
         let mut engine = Self {
             game,
-            scene,
+            start,
+            focus: scene.focus,
             sim,
             camera,
             mouse: Mouse::default(),
@@ -151,8 +159,8 @@ impl<G: Game> Engine<G> {
         // The camera glides towards where the focused object is drawn
         // (interpolated), in real frame time; a chase camera also swings
         // round according to its velocity.
-        let target = self.sim.drawn_position(self.scene.focus);
-        let velocity = self.sim.world().bodies[self.scene.focus].motion.velocity;
+        let target = self.sim.drawn_position(self.focus);
+        let velocity = self.sim.world().bodies[self.focus].motion.velocity;
         self.camera.update(target, velocity, frame_time);
         self.draw(backend, steps);
     }
@@ -172,7 +180,7 @@ impl<G: Game> Engine<G> {
         match command {
             Command::Quit => return Flow::Quit,
             Command::Restart => {
-                self.sim = Simulation::new(self.scene.world(), self.game.physics_dt());
+                self.sim = Simulation::new(self.start.clone(), self.game.physics_dt());
                 self.stats.restart_clock();
             }
             Command::NextCamera => self.camera.next_mode(),
@@ -219,7 +227,7 @@ impl<G: Game> Engine<G> {
             self.camera.mode.name(),
             self.lag.name(),
         )
-        .and_then(|()| self.game.write_hud(self.sim.view(), self.scene.focus, out))
+        .and_then(|()| self.game.write_hud(self.sim.view(), self.focus, out))
     }
 }
 
@@ -386,6 +394,32 @@ mod tests {
         // south) that's (0, 0.5, -50).
         let (_, target) = backend.camera.expect("a camera is set");
         assert_eq!(target, Vec3::new(0.0, 0.5, -50.0));
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "invalid scene: body 0 is dynamic, but its collider can only be static"
+    )]
+    fn an_impossible_scene_is_refused_at_load() {
+        /// A game whose ground falls: its scene is impossible.
+        struct FallingGround;
+        impl Game for FallingGround {
+            fn physics_dt(&self) -> f64 {
+                1.0 / 64.0
+            }
+            fn scene(&self) -> Scene {
+                let mut scene = sliding_ball().scene();
+                scene.objects[0].body.body_type = physics::BodyType::Dynamic;
+                scene
+            }
+            fn command_for(&self, _event: InputEvent) -> Option<Command> {
+                None
+            }
+            fn write_hud(&self, _: WorldView<'_>, _: usize, _: &mut String) -> fmt::Result {
+                Ok(())
+            }
+        }
+        Engine::new(&mut RecordingBackend::new(SCREEN), FallingGround);
     }
 
     #[test]

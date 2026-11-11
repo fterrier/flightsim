@@ -14,7 +14,7 @@
 //! its visual to the renderer. Object `i` becomes body `i` and drawable
 //! `i`: one index everywhere.
 
-use physics::{Body, DVec3, World};
+use physics::{Body, DVec3, World, WorldError};
 
 use crate::render::{Color, Visual};
 
@@ -45,8 +45,8 @@ pub struct Scene {
 
 impl Scene {
     /// The physics side of the scene: object `i`'s body is the world's
-    /// body `i`.
-    pub(crate) fn world(&self) -> World {
+    /// body `i`. Fails if a body makes no sense (see `WorldError`).
+    pub(crate) fn world(&self) -> Result<World, WorldError> {
         let bodies = self.objects.iter().map(|object| object.body).collect();
         World::new(bodies, self.gravity)
     }
@@ -93,8 +93,24 @@ mod tests {
             background: WHITE,
             gravity: STANDARD_GRAVITY,
         };
-        let world = scene.world();
+        let world = scene.world().expect("a valid scene");
         assert_eq!(world.bodies, [ground.body, ball.body]);
         assert_eq!(world.gravity, STANDARD_GRAVITY);
+    }
+
+    #[test]
+    fn a_scene_with_an_impossible_body_has_no_world() {
+        let falling_ground = object(
+            BodyType::Dynamic,
+            Collider::HalfSpace,
+            Shape::Grid(GroundGrid::default()),
+        );
+        let scene = Scene {
+            objects: vec![falling_ground],
+            focus: 0,
+            background: WHITE,
+            gravity: STANDARD_GRAVITY,
+        };
+        assert_eq!(scene.world(), Err(WorldError::MustBeStatic { body: 0 }));
     }
 }
