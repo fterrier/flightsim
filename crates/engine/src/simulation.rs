@@ -114,7 +114,10 @@ fn positions(world: &World) -> impl Iterator<Item = DVec3> + '_ {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use physics::{Body, Motion, STANDARD_GRAVITY, Sphere};
+    use physics::{Body, Motion, STANDARD_GRAVITY, Sphere, StaticCollider};
+
+    /// Flat ground at sea level.
+    const GROUND: StaticCollider = StaticCollider::Ground { elevation: 0.0 };
 
     /// Exact in binary floating point, so step counts and positions below
     /// can be compared exactly.
@@ -136,7 +139,11 @@ mod tests {
     /// One ball sliding at 64 m/s: exactly 1 m per step.
     fn one_ball() -> Simulation {
         Simulation::new(
-            World::new(vec![sliding_ball(0.0, 64.0)], STANDARD_GRAVITY),
+            World::new(
+                vec![sliding_ball(0.0, 64.0)],
+                vec![GROUND],
+                STANDARD_GRAVITY,
+            ),
             DT,
         )
     }
@@ -196,6 +203,7 @@ mod tests {
     fn every_body_is_interpolated_with_its_own_previous_position() {
         let world = World::new(
             vec![sliding_ball(0.0, 64.0), sliding_ball(10.0, -128.0)],
+            vec![GROUND],
             STANDARD_GRAVITY,
         );
         let mut sim = Simulation::new(world, DT);

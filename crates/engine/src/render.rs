@@ -20,7 +20,7 @@ use glam::{Vec2, Vec3};
 use physics::{DVec2, DVec3};
 
 use crate::camera::Camera;
-use crate::scene::Scene;
+use crate::scene::{Ground, GroundGrid, Scene};
 use crate::simulation::Simulation;
 
 /// A colour, in *linear* light (how much light, not how bright it looks).
@@ -41,8 +41,6 @@ impl Color {
     }
 }
 
-const GREY: Color = Color::rgb(0.5, 0.5, 0.5);
-const DARK_GREY: Color = Color::rgb(0.08, 0.08, 0.08);
 pub(crate) const WHITE: Color = Color::rgb(1.0, 1.0, 1.0);
 
 /// The geometry of a [`Visual`], in metres.
@@ -103,13 +101,6 @@ pub trait RenderBackend {
 /// sky, so it goes north-west and down.
 const SUN_DIRECTION: DVec3 = DVec3::new(0.4, -0.3, 0.85);
 
-/// Ground grid: a line every `GRID_SPACING` metres, a brighter one every
-/// `GRID_MAJOR_EVERY` lines, over `GRID_HALF_SIZE` metres around what the
-/// camera looks at.
-const GRID_SPACING: f64 = 2.0;
-const GRID_MAJOR_EVERY: i64 = 5;
-const GRID_HALF_SIZE: f64 = 50.0;
-
 /// Width of the grid lines, in physical pixels.
 const MAJOR_LINE_WIDTH: f32 = 2.0;
 const MINOR_LINE_WIDTH: f32 = 1.0;
@@ -124,6 +115,8 @@ pub(crate) struct Renderer {
     // TODO(step-11): keyed by entity ID instead of index; created when an
     // entity spawns, freed when it despawns (like Godot's `free_rid`).
     proxies: Vec<ProxyId>,
+    /// The scene's ground, drawn as a grid (none: nothing to draw).
+    ground: Option<Ground>,
 }
 
 impl Renderer {
@@ -137,6 +130,7 @@ impl Renderer {
                 .iter()
                 .map(|object| backend.create_proxy(&object.visual))
                 .collect(),
+            ground: scene.ground,
         }
     }
 
@@ -157,18 +151,21 @@ impl Renderer {
             backend.set_position(*proxy, to_render(position));
         }
 
-        for line in grid_lines(camera.target.truncate()) {
-            let (color, width) = if line.major {
-                (GREY, MAJOR_LINE_WIDTH)
-            } else {
-                (DARK_GREY, MINOR_LINE_WIDTH)
-            };
-            backend.world_line(to_render(line.from), to_render(line.to), color, width);
+        if let Some(ground) = &self.ground {
+            let grid = &ground.grid;
+            for line in grid_lines(camera.target.truncate(), grid, ground.elevation) {
+                let (color, width) = if line.major {
+                    (grid.major_color, MAJOR_LINE_WIDTH)
+                } else {
+                    (grid.minor_color, MINOR_LINE_WIDTH)
+                };
+                backend.world_line(to_render(line.from), to_render(line.to), color, width);
+            }
         }
     }
 }
 
-/// One line of the ground grid (NED, on the ground: z = 0).
+/// One line of the ground grid (NED, on the ground).
 #[derive(Debug)]
 struct GridLine {
     from: DVec3,
@@ -176,35 +173,38 @@ struct GridLine {
     major: bool,
 }
 
-/// The ground grid around `centre` (north, east, in metres): lines running
-/// east-west and north-south.
+/// The ground grid around `centre` (north, east, in metres), on a ground at
+/// `elevation` metres: lines running east-west and north-south.
 ///
 /// The grid's centre is snapped to whole major cells, so as the camera
 /// moves the lines stay put on the ground instead of sliding along with
 /// it. Returns an *iterator*: lines are produced as they're drawn, never
 /// stored, so no memory is allocated per frame.
-fn grid_lines(centre: DVec2) -> impl Iterator<Item = GridLine> {
-    let cell = GRID_SPACING * GRID_MAJOR_EVERY as f64;
+fn grid_lines(centre: DVec2, grid: &GroundGrid, elevation: f64) -> impl Iterator<Item = GridLine> {
+    let grid = *grid; // a small `Copy` struct: the iterator owns its copy
+    let major_every = i64::from(grid.major_every);
+    let cell = grid.spacing * major_every as f64;
     let snapped = (centre / cell).round() * cell;
-    let lines_each_side = (GRID_HALF_SIZE / GRID_SPACING) as i64;
+    let lines_each_side = (grid.half_size / grid.spacing) as i64;
+    let (half, z) = (grid.half_size, -elevation); // z is down
     (-lines_each_side..=lines_each_side).flat_map(move |i| {
-        let offset = i as f64 * GRID_SPACING;
+        let offset = i as f64 * grid.spacing;
         // rem_euclid, not %: -10 % 5 is 0 but -3 % 5 is -3 in Rust.
-        let major = i.rem_euclid(GRID_MAJOR_EVERY) == 0;
+        let major = i.rem_euclid(major_every) == 0;
         let (north, east) = (snapped.x + offset, snapped.y + offset);
-        let (south_edge, north_edge) = (snapped.x - GRID_HALF_SIZE, snapped.x + GRID_HALF_SIZE);
-        let (west_edge, east_edge) = (snapped.y - GRID_HALF_SIZE, snapped.y + GRID_HALF_SIZE);
+        let (south_edge, north_edge) = (snapped.x - half, snapped.x + half);
+        let (west_edge, east_edge) = (snapped.y - half, snapped.y + half);
         [
             // Running east-west, at a fixed `north`.
             GridLine {
-                from: DVec3::new(north, west_edge, 0.0),
-                to: DVec3::new(north, east_edge, 0.0),
+                from: DVec3::new(north, west_edge, z),
+                to: DVec3::new(north, east_edge, z),
                 major,
             },
             // Running north-south, at a fixed `east`.
             GridLine {
-                from: DVec3::new(south_edge, east, 0.0),
-                to: DVec3::new(north_edge, east, 0.0),
+                from: DVec3::new(south_edge, east, z),
+                to: DVec3::new(north_edge, east, z),
                 major,
             },
         ]
@@ -311,7 +311,7 @@ pub(crate) mod fakes {
 mod tests {
     use super::fakes::RecordingBackend;
     use super::*;
-    use crate::scene::SceneObject;
+    use crate::scene::{Ground, GroundGrid, SceneObject};
     use physics::{Body, Motion, STANDARD_GRAVITY, Sphere};
 
     const BALL: Visual = Visual {
@@ -341,12 +341,26 @@ mod tests {
         }
     }
 
+    /// Flat ground at sea level, default grid.
+    const GROUND: Ground = Ground {
+        elevation: 0.0,
+        grid: GRID,
+    };
+    const GRID: GroundGrid = GroundGrid {
+        spacing: 2.0,
+        major_every: 5,
+        half_size: 50.0,
+        minor_color: Color::rgb(0.1, 0.1, 0.1),
+        major_color: Color::rgb(0.5, 0.5, 0.5),
+    };
+
     fn scene(objects: Vec<SceneObject>) -> Scene {
         Scene {
             objects,
             focus: 0,
             background: BACKGROUND,
             gravity: STANDARD_GRAVITY,
+            ground: Some(GROUND),
         }
     }
 
@@ -449,9 +463,38 @@ mod tests {
     }
 
     #[test]
+    fn the_grid_is_drawn_at_the_ground_elevation_with_the_scene_look() {
+        let mut plateau = scene(vec![ball_at(0.0, 0.0)]);
+        plateau.ground = Some(Ground {
+            elevation: 7.0,
+            grid: GroundGrid {
+                spacing: 10.0,
+                half_size: 20.0,
+                ..GRID
+            },
+        });
+        let mut backend = RecordingBackend::new(SCREEN);
+        let (sim, renderer, camera) = setup(&plateau, &mut backend, DVec3::ZERO);
+        renderer.draw(&mut backend, &sim, &camera);
+        // Render y is up: the grid floats 7 m up; 5 lines each way.
+        assert!(backend.lines.iter().all(|(a, b)| a.y == 7.0 && b.y == 7.0));
+        assert_eq!(backend.lines.len(), 2 * 5);
+    }
+
+    #[test]
+    fn without_a_ground_there_is_no_grid() {
+        let mut empty_sky = scene(vec![ball_at(0.0, 0.0)]);
+        empty_sky.ground = None;
+        let mut backend = RecordingBackend::new(SCREEN);
+        let (sim, renderer, camera) = setup(&empty_sky, &mut backend, DVec3::ZERO);
+        renderer.draw(&mut backend, &sim, &camera);
+        assert!(backend.lines.is_empty());
+    }
+
+    #[test]
     fn the_grid_stays_fixed_to_the_ground_as_the_camera_moves() {
         let lines = |centre| {
-            grid_lines(centre)
+            grid_lines(centre, &GRID, 0.0)
                 .map(|l| (l.from, l.to))
                 .collect::<Vec<_>>()
         };
@@ -460,7 +503,7 @@ mod tests {
 
     #[test]
     fn every_fifth_grid_line_is_a_major_one() {
-        let majors: Vec<f64> = grid_lines(DVec2::ZERO)
+        let majors: Vec<f64> = grid_lines(DVec2::ZERO, &GRID, 0.0)
             // East-west lines: their north coordinate doesn't change.
             .filter(|line| line.major && line.from.x == line.to.x)
             .map(|line| line.from.x)

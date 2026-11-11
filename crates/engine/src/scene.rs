@@ -7,7 +7,7 @@
 //! its visual to the renderer. Object `i` becomes physics body `i` and
 //! render proxy `i`: that shared index is what links them.
 
-use physics::{Body, DVec3, World};
+use physics::{Body, DVec3, StaticCollider, World};
 
 use crate::render::{Color, Visual};
 
@@ -22,6 +22,46 @@ pub struct SceneObject {
     pub visual: Visual,
 }
 
+/// How the ground is drawn: a grid of lines, a brighter one every
+/// `major_every` lines, over `half_size` metres around what the camera
+/// looks at.
+// TODO(later): textured terrain, from real elevation data.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GroundGrid {
+    /// Metres between lines.
+    pub spacing: f64,
+    pub major_every: u32,
+    /// Metres drawn on each side of the camera's target.
+    pub half_size: f64,
+    pub minor_color: Color,
+    pub major_color: Color,
+}
+
+impl Default for GroundGrid {
+    /// A neutral grey grid: a line every 2 m, a brighter one every 10 m,
+    /// 50 m around the camera.
+    fn default() -> Self {
+        Self {
+            spacing: 2.0,
+            major_every: 5,
+            half_size: 50.0,
+            minor_color: Color::rgb(0.08, 0.08, 0.08),
+            major_color: Color::rgb(0.5, 0.5, 0.5),
+        }
+    }
+}
+
+/// An endless flat ground: what the scene stands on. Content like any
+/// object: physics gets a static collider (`StaticCollider::Ground`), the
+/// renderer draws its grid. A scene without one has no ground at all.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ground {
+    /// Metres above the origin.
+    pub elevation: f64,
+    /// How it looks.
+    pub grid: GroundGrid,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Scene {
     /// The objects, in order (the order links bodies and render proxies).
@@ -32,13 +72,23 @@ pub struct Scene {
     pub background: Color,
     /// The world's gravity, in m/s² (usually `physics::STANDARD_GRAVITY`).
     pub gravity: DVec3,
+    /// What the scene stands on, if anything.
+    pub ground: Option<Ground>,
 }
 
 impl Scene {
-    /// The physics side of the scene: one body per object, in order.
+    /// The physics side of the scene: one body per object, in order, and
+    /// the ground as a static collider.
     pub(crate) fn world(&self) -> World {
         let bodies = self.objects.iter().map(|object| object.body).collect();
-        World::new(bodies, self.gravity)
+        let statics = self
+            .ground
+            .iter()
+            .map(|ground| StaticCollider::Ground {
+                elevation: ground.elevation,
+            })
+            .collect();
+        World::new(bodies, statics, self.gravity)
     }
 }
 
@@ -64,16 +114,33 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_world_has_one_body_per_object_in_the_same_order() {
-        let scene = Scene {
+    fn scene(ground: Option<Ground>) -> Scene {
+        Scene {
             objects: vec![ball(1.0), ball(2.0)],
             focus: 0,
             background: WHITE,
             gravity: STANDARD_GRAVITY,
-        };
-        let world = scene.world();
+            ground,
+        }
+    }
+
+    #[test]
+    fn the_world_has_one_body_per_object_in_the_same_order() {
+        let world = scene(None).world();
         assert_eq!(world.bodies, [ball(1.0).body, ball(2.0).body]);
         assert_eq!(world.gravity, STANDARD_GRAVITY);
+    }
+
+    #[test]
+    fn the_ground_becomes_a_static_collider_at_its_elevation() {
+        let ground = Ground {
+            elevation: 12.0,
+            grid: GroundGrid::default(),
+        };
+        assert_eq!(
+            scene(Some(ground)).world().statics,
+            [StaticCollider::Ground { elevation: 12.0 }]
+        );
+        assert!(scene(None).world().statics.is_empty());
     }
 }

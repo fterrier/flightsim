@@ -61,6 +61,18 @@ pub struct Body {
     pub collider: Sphere,
 }
 
+/// A collider that never moves (like Rapier's fixed bodies or Godot's
+/// `StaticBody3D`). The world has none built in: whatever ground or
+/// obstacles exist are placed by the scene.
+// TODO(step-12): buildings (boxes) and real terrain (heightfields).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StaticCollider {
+    /// An endless flat ground, `elevation` metres above the origin (so at
+    /// z = -elevation). Godot calls it a world-boundary shape, Rapier a
+    /// half-space: everything stays above it.
+    Ground { elevation: f64 },
+}
+
 /// Everything the simulation knows about.
 // TODO(step-11): bodies become ECS entities; the `Vec` index becomes an
 // entity ID (a generational handle, safe once objects can be removed).
@@ -80,14 +92,17 @@ pub struct World {
     /// All simulated objects, stored contiguously. Their index identifies
     /// them (the renderer's proxy `i` shows body `i`).
     pub bodies: Vec<Body>,
+    /// Immovable colliders: the ground, later buildings.
+    pub statics: Vec<StaticCollider>,
 }
 
 impl World {
-    pub fn new(bodies: Vec<Body>, gravity: DVec3) -> Self {
+    pub fn new(bodies: Vec<Body>, statics: Vec<StaticCollider>, gravity: DVec3) -> Self {
         Self {
             time: 0.0,
             gravity,
             bodies,
+            statics,
         }
     }
 
@@ -108,7 +123,13 @@ impl World {
         for body in &mut self.bodies {
             // TODO(step-06): add aerodynamic forces (lift, drag) and thrust.
             integrate(&mut body.motion, self.gravity, dt);
-            ground_contact(&mut body.motion, &body.collider);
+            for collider in &self.statics {
+                match *collider {
+                    StaticCollider::Ground { elevation } => {
+                        ground_contact(&mut body.motion, &body.collider, elevation);
+                    }
+                }
+            }
         }
         self.time += dt;
     }
@@ -134,8 +155,9 @@ fn integrate(motion: &mut Motion, acceleration: DVec3, dt: f64) {
 }
 
 /// Keeps something moving with `motion`, with a spherical collider
-/// `shape`, from going through the ground (the plane z = 0; z is down, so
-/// "below the ground" means z > 0).
+/// `shape`, from going through a flat ground at `elevation` metres (the
+/// plane z = -elevation; z is down, so "below the ground" means a larger
+/// z).
 ///
 /// Integration moves in discrete jumps, so a falling ball ends up slightly
 /// *inside* the ground on the step it lands. We push it back on top and
@@ -143,10 +165,11 @@ fn integrate(motion: &mut Motion, acceleration: DVec3, dt: f64) {
 /// Sideways motion is kept, as there's no friction yet.
 // TODO(step-12): replace with landing gear contacts: spring-damper forces
 // at each wheel, plus rolling friction and brakes.
-fn ground_contact(motion: &mut Motion, shape: &Sphere) {
-    // The centre must stay `radius` above the ground: z <= -radius.
-    if motion.position.z > -shape.radius {
-        motion.position.z = -shape.radius;
+fn ground_contact(motion: &mut Motion, shape: &Sphere, elevation: f64) {
+    // The centre must stay `radius` above the ground.
+    let lowest = -elevation - shape.radius;
+    if motion.position.z > lowest {
+        motion.position.z = lowest;
         // Cancel downward (+z) speed, keep any upward (-z) speed.
         motion.velocity.z = motion.velocity.z.min(0.0);
     }
@@ -161,6 +184,8 @@ mod tests {
     const BALL: Sphere = Sphere { radius: RADIUS };
     /// g, as a positive number, in m/s².
     const G: f64 = 9.80665;
+    /// Flat ground at sea level.
+    const GROUND: StaticCollider = StaticCollider::Ground { elevation: 0.0 };
 
     /// 20 m above the ground (z is *down*, so z = -20), thrown north at
     /// 5 m/s.
@@ -276,7 +301,7 @@ mod tests {
             position: DVec3::new(3.0, 4.0, 0.1),
             velocity: DVec3::new(5.0, 6.0, 2.0),
         };
-        ground_contact(&mut motion, &BALL);
+        ground_contact(&mut motion, &BALL, 0.0);
         assert_eq!(motion.position, DVec3::new(3.0, 4.0, -RADIUS));
         // Falling stops; no friction yet, so it keeps sliding.
         assert_eq!(motion.velocity, DVec3::new(5.0, 6.0, 0.0));
@@ -285,15 +310,65 @@ mod tests {
     #[test]
     fn ground_contact_ignores_a_ball_in_the_air() {
         let mut motion = thrown();
-        ground_contact(&mut motion, &BALL);
+        ground_contact(&mut motion, &BALL, 0.0);
         assert_eq!(motion, thrown());
+    }
+
+    #[test]
+    fn ground_contact_respects_the_ground_elevation() {
+        // Ground 10 m up (z = -10): the ball's centre stops at z = -10.4.
+        let mut motion = Motion {
+            position: DVec3::new(0.0, 0.0, -9.0),
+            velocity: DVec3::new(0.0, 0.0, 2.0),
+        };
+        ground_contact(&mut motion, &BALL, 10.0);
+        assert_eq!(motion.position.z, -10.0 - RADIUS);
+        assert_eq!(motion.velocity.z, 0.0);
+    }
+
+    #[test]
+    fn without_a_ground_bodies_fall_forever() {
+        // The ground is not built in: it's a static collider the world may
+        // or may not have (like a Godot StaticBody3D or a Rapier fixed
+        // body), placed by the scene.
+        let mut world = World::new(vec![thrown_ball()], vec![], STANDARD_GRAVITY);
+        for _ in 0..600 {
+            world.step(DT);
+        }
+        assert!(
+            world.bodies[0].motion.position.z > 100.0,
+            "fell through: no ground"
+        );
+    }
+
+    #[test]
+    fn a_raised_ground_holds_bodies_at_its_elevation() {
+        let plateau = StaticCollider::Ground { elevation: 10.0 };
+        let mut world = World::new(vec![thrown_ball()], vec![plateau], STANDARD_GRAVITY);
+        for _ in 0..600 {
+            world.step(DT);
+        }
+        let altitude = -world.bodies[0].motion.position.z;
+        assert_eq!(altitude, 10.0 + RADIUS);
+    }
+
+    #[test]
+    fn every_static_collider_applies() {
+        // Two grounds: the higher one wins, as the ball lands on it first.
+        let low = StaticCollider::Ground { elevation: 0.0 };
+        let high = StaticCollider::Ground { elevation: 5.0 };
+        let mut world = World::new(vec![thrown_ball()], vec![low, high], STANDARD_GRAVITY);
+        for _ in 0..600 {
+            world.step(DT);
+        }
+        assert_eq!(-world.bodies[0].motion.position.z, 5.0 + RADIUS);
     }
 
     #[test]
     fn gravity_is_a_setting_of_the_world() {
         // Rapier and Box2D make gravity a world parameter too: the engine
         // assumes no planet. Without gravity, a thrown ball flies straight.
-        let mut world = World::new(vec![thrown_ball()], DVec3::ZERO);
+        let mut world = World::new(vec![thrown_ball()], vec![GROUND], DVec3::ZERO);
         for _ in 0..120 {
             world.step(DT);
         }
@@ -311,6 +386,7 @@ mod tests {
     fn world_starts_at_time_zero_with_its_bodies() {
         let world = World::new(
             vec![thrown_ball(), resting_ball(5.0, 1.0)],
+            vec![GROUND],
             STANDARD_GRAVITY,
         );
         assert_eq!(world.time(), 0.0);
@@ -321,7 +397,7 @@ mod tests {
     fn ball_lands_at_the_free_fall_time_and_stays_on_the_ground() {
         // Its centre falls h = 20 m - radius, which takes t = sqrt(2h/g).
         let impact = (2.0 * (20.0 - RADIUS) / G).sqrt();
-        let mut world = World::new(vec![thrown_ball()], STANDARD_GRAVITY);
+        let mut world = World::new(vec![thrown_ball()], vec![GROUND], STANDARD_GRAVITY);
         let altitude = |world: &World| -world.bodies[0].motion.position.z;
 
         while world.time() < impact - 2.0 * DT {
@@ -345,6 +421,7 @@ mod tests {
     fn every_body_is_simulated_with_its_own_collider() {
         let mut world = World::new(
             vec![thrown_ball(), resting_ball(5.0, 1.0)],
+            vec![GROUND],
             STANDARD_GRAVITY,
         );
         for _ in 0..120 {
@@ -361,8 +438,8 @@ mod tests {
         // Two worlds fed the same steps must be bit-identical (assert_eq!,
         // not a tolerance). Replays in step 10 rely on this.
         let bodies = vec![thrown_ball(), resting_ball(5.0, 1.0)];
-        let mut a = World::new(bodies.clone(), STANDARD_GRAVITY);
-        let mut b = World::new(bodies, STANDARD_GRAVITY);
+        let mut a = World::new(bodies.clone(), vec![GROUND], STANDARD_GRAVITY);
+        let mut b = World::new(bodies, vec![GROUND], STANDARD_GRAVITY);
         for _ in 0..1000 {
             a.step(DT);
             b.step(DT);

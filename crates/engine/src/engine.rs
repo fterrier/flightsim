@@ -215,7 +215,7 @@ pub(crate) mod testing {
     use super::*;
     use crate::input::Key;
     use crate::render::{Color, Shape, Visual, WHITE};
-    use crate::scene::SceneObject;
+    use crate::scene::{Ground, GroundGrid, SceneObject};
     use physics::{Body, DVec3, Motion, STANDARD_GRAVITY, Sphere};
 
     pub(crate) struct TestGame {
@@ -250,6 +250,10 @@ pub(crate) mod testing {
                 focus: self.focus,
                 background: Color::rgb(0.0, 0.0, 0.0),
                 gravity: STANDARD_GRAVITY,
+                ground: Some(Ground {
+                    elevation: 0.0,
+                    grid: GroundGrid::default(),
+                }),
             }
         }
 

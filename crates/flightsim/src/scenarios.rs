@@ -3,10 +3,11 @@
 //! z down): altitude is -z, and "up" velocities are negative.
 
 use engine::{
-    Body, Color, DVec3, Motion, STANDARD_GRAVITY, Scene, SceneObject, Shape, Sphere, Visual,
+    Body, Color, DVec3, Ground, GroundGrid, Motion, STANDARD_GRAVITY, Scene, SceneObject, Shape,
+    Sphere, Visual,
 };
 
-/// Three balls resting on the ground, thrown at once in different
+/// Three balls resting on flat ground at sea level, thrown at once in different
 /// directions: a small one north-west, a high one north (followed by the
 /// camera) and a big flat one north-east. They pass through each other:
 /// collisions between objects come in step 12.
@@ -37,6 +38,17 @@ pub(crate) fn ball_throws() -> Scene {
         // Linear light: tiny values for a dark night blue.
         background: Color::rgb(0.006, 0.008, 0.015),
         gravity: STANDARD_GRAVITY,
+        // Flat ground at sea level, a grid line every 2 m, brighter every 10 m.
+        ground: Some(Ground {
+            elevation: 0.0,
+            grid: GroundGrid {
+                spacing: 2.0,
+                major_every: 5,
+                half_size: 50.0,
+                minor_color: Color::rgb(0.08, 0.08, 0.08),
+                major_color: Color::rgb(0.5, 0.5, 0.5),
+            },
+        }),
     }
 }
 
@@ -66,11 +78,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_object_starts_resting_on_the_ground() {
-        // z is down: resting means the centre is `radius` above z = 0.
-        for object in ball_throws().objects {
+    fn every_object_starts_resting_on_the_scenario_ground() {
+        // The ground is the scenario's, not the engine's: it must declare
+        // one, and the balls must rest on it (z is down: the centre is
+        // `radius` above the ground at z = -elevation).
+        let scene = ball_throws();
+        let ground = scene.ground.expect("the scenario has a ground");
+        for object in scene.objects {
             let body = object.body;
-            assert_eq!(body.motion.position.z, -body.collider.radius);
+            assert_eq!(
+                body.motion.position.z,
+                -ground.elevation - body.collider.radius
+            );
         }
     }
 

@@ -36,7 +36,7 @@ mod timestep;
 pub use engine::Game;
 pub use input::{Command, InputEvent, Key};
 pub use render::{Color, Shape, Visual};
-pub use scene::{Scene, SceneObject};
+pub use scene::{Ground, GroundGrid, Scene, SceneObject};
 pub use simulation::WorldView;
 
 // The engine is the games' single dependency: the physics crate is an

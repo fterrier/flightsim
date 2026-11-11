@@ -103,7 +103,10 @@ Rules:
    (scene nodes) for simulated objects; once per frame, one place copies
    the (interpolated) physics state into them: `Renderer::draw`, in
    `engine/src/render.rs`.
-6. **Content is data.** A scene (a "level", defined by the game) lists objects, each
+6. **Content is data.** A scene (a "level", defined by the game) declares
+   everything that exists, *including the ground*: the engine has no
+   built-in ground, only the mechanism (static colliders in physics, a
+   ground grid in the renderer). It lists objects, each
    described whole: its `Body` (motion + collider) for the simulation and
    its `Visual` (shape + colour, later a glTF mesh + material) for the
    renderer. Loading splits them; object `i` becomes physics body `i` and
