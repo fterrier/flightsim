@@ -80,7 +80,7 @@ mod tests {
         let ground = object(
             BodyType::Static,
             Collider::HalfSpace,
-            Shape::Grid(GroundGrid::default()),
+            Shape::GroundPlane(GroundGrid::default()),
         );
         let ball = object(
             BodyType::Dynamic,
@@ -103,7 +103,7 @@ mod tests {
         let falling_ground = object(
             BodyType::Dynamic,
             Collider::HalfSpace,
-            Shape::Grid(GroundGrid::default()),
+            Shape::GroundPlane(GroundGrid::default()),
         );
         let scene = Scene {
             objects: vec![falling_ground],

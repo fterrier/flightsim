@@ -61,8 +61,9 @@ crates/
                     simulation.rs   physics world + fixed steps + interpolation
                     timestep.rs     the fixed-timestep clock
                     camera.rs       the camera: smooth follow, zoom, what's visible
-                    render.rs       Renderer (proxies, debug drawing) against
+                    render.rs       Renderer (one proxy per object) against
                                     the RenderBackend interface
+                    ground.rs       a ground's mesh and grid texture
                     hud.rs          text overlay; FrameStats (FPS, real time)
                     input.rs        Key, InputEvent, Command
                     scene.rs        the scene format (objects = body + visual)
@@ -165,7 +166,7 @@ upgrades are deliberate.
 All rendering decisions (where proxies go, f64 → f32, zoom limits, ruler
 and HUD layout, later the NED → y-up conversion) live in `Renderer`,
 written against `RenderBackend`: a few generic operations (create a
-sphere proxy, move it, set the camera, debug lines, text). The
+sphere or textured-mesh proxy, move it, set the camera, text). The
 kiss3d implementation is a "humble object", one kiss3d call per method.
 
 This follows established practice: engines put the graphics API behind

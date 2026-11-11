@@ -267,7 +267,7 @@ pub(crate) mod testing {
                     collider: Collider::HalfSpace,
                 },
                 visual: Visual {
-                    shape: Shape::Grid(GroundGrid::default()),
+                    shape: Shape::GroundPlane(GroundGrid::default()),
                     color: WHITE,
                 },
             };
@@ -369,7 +369,7 @@ mod tests {
     fn the_first_frame_is_prepared_on_creation() {
         // The platform shows a frame before the first `frame()` call.
         let (_, backend) = engine(sliding_ball());
-        assert_eq!(backend.proxies.len(), 1);
+        assert_eq!(backend.proxies.len(), 2); // the ground and the ball
         assert!(backend.camera.is_some());
         assert!(!backend.texts.is_empty());
     }

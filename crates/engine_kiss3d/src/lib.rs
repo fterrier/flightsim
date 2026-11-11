@@ -8,11 +8,15 @@
 //! testing, and it needs a window and a GPU, which CI doesn't have. The
 //! whole crate is excluded from coverage; any logic belongs in `engine`.
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 
-use engine::platform::{Engine, Flow, ProxyId, RawInput, RenderBackend, Screen};
+use engine::platform::{
+    Engine, Flow, Mesh, ProxyId, RawInput, RenderBackend, Screen, Texture, VIEW_DISTANCE,
+};
 use engine::{Color, DVec2, Game, Key, MouseButton};
 use glam::{Vec2, Vec3};
 use kiss3d::camera::OrbitCamera3d;
@@ -20,6 +24,7 @@ use kiss3d::color::Color as Kiss3dColor;
 use kiss3d::event::{Action, Key as Kiss3dKey, MouseButton as Kiss3dButton, WindowEvent};
 use kiss3d::glamx::{Vec2 as Kiss3dVec2, Vec3 as Kiss3dVec3};
 use kiss3d::light::Light;
+use kiss3d::resource::{GpuMesh3d, Texture as Kiss3dTexture};
 use kiss3d::scene::SceneNode3d;
 use kiss3d::text::Font;
 use kiss3d::window::Window;
@@ -86,10 +91,10 @@ impl Kiss3dBackend {
         // Our `Camera` decides where to look from: turn off kiss3d's own
         // camera controls (mouse rotate and drag, reset key; a zoom step of
         // 1 makes the wheel a no-op) and its limits, which would otherwise
-        // override what `set_camera` asks for. Far plane: 5 km.
+        // override what `set_camera` asks for.
         let (eye, at) = (Kiss3dVec3::new(0.0, 10.0, 40.0), Kiss3dVec3::ZERO);
-        let mut camera =
-            OrbitCamera3d::new_with_frustum(std::f32::consts::FRAC_PI_4, 0.1, 5000.0, eye, at);
+        let fov = std::f32::consts::FRAC_PI_4;
+        let mut camera = OrbitCamera3d::new_with_frustum(fov, 0.1, VIEW_DISTANCE, eye, at);
         camera.rebind_rotate_button(None);
         camera.rebind_drag_button(None);
         camera.rebind_reset_key(None);
@@ -149,11 +154,32 @@ impl RenderBackend for Kiss3dBackend {
         self.proxies[proxy.0].set_position(kiss3d_vec3(position));
     }
 
-    fn world_line(&mut self, from: Vec3, to: Vec3, color: Color, width: f32) {
-        let (from, to) = (kiss3d_vec3(from), kiss3d_vec3(to));
-        // `false`: width in screen pixels, not shrinking with distance.
-        self.window
-            .draw_line(from, to, kiss3d_color(color), width, false);
+    fn create_mesh(&mut self, mesh: &Mesh, texture: &Texture) -> ProxyId {
+        let gpu_mesh = GpuMesh3d::new(
+            mesh.positions.iter().copied().map(kiss3d_vec3).collect(),
+            mesh.triangles.clone(),
+            Some(mesh.normals.iter().copied().map(kiss3d_vec3).collect()),
+            Some(mesh.uvs.iter().copied().map(kiss3d_vec).collect()),
+            false,
+        );
+        let mut node = self
+            .scene
+            .add_mesh(Rc::new(RefCell::new(gpu_mesh)), Kiss3dVec3::ONE);
+        // Repeated, smoothly filtered, with mipmaps and 16x anisotropic
+        // filtering: sharp up close, no shimmer far away or at grazing
+        // angles.
+        node.set_texture(Kiss3dTexture::new(
+            texture.width,
+            texture.height,
+            &texture.srgba,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            wgpu::AddressMode::Repeat,
+            wgpu::FilterMode::Linear,
+            true,
+            16,
+        ));
+        self.proxies.push(node);
+        ProxyId(self.proxies.len() - 1)
     }
 
     fn screen_text(&mut self, text: &str, at: Vec2, size: f32, color: Color) {

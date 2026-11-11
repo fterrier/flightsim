@@ -45,9 +45,8 @@ pub(crate) fn ball_throws() -> Scene {
     }
 }
 
-/// The ground: a static body whose surface is at `GROUND_ELEVATION`, drawn
-/// as a grid with a line every 2 m,
-/// a brighter one every 10 m.
+/// The ground: an endless static plane at `GROUND_ELEVATION`, drawn dark
+/// with a grid line every 2 m and a brighter one every 10 m.
 fn ground() -> SceneObject {
     SceneObject {
         body: Body {
@@ -59,13 +58,14 @@ fn ground() -> SceneObject {
             collider: Collider::HalfSpace,
         },
         visual: Visual {
-            shape: Shape::Grid(GroundGrid {
+            shape: Shape::GroundPlane(GroundGrid {
                 spacing: 2.0,
                 major_every: 5,
-                half_size: 50.0,
                 minor_color: Color::rgb(0.08, 0.08, 0.08),
+                major_color: Color::rgb(0.5, 0.5, 0.5),
             }),
-            color: Color::rgb(0.5, 0.5, 0.5),
+            // Linear light: a very dark green-grey.
+            color: Color::rgb(0.01, 0.012, 0.01),
         },
     }
 }

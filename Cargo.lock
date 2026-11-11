@@ -741,6 +741,7 @@ dependencies = [
  "engine",
  "glam 0.34.3",
  "kiss3d",
+ "wgpu",
 ]
 
 [[package]]

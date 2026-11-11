@@ -24,6 +24,7 @@
 mod alloc_count;
 mod camera;
 mod engine;
+mod ground;
 mod hud;
 mod input;
 mod render;
@@ -57,5 +58,5 @@ pub use physics::{Body, BodyType, Collider, DVec2, DVec3, Motion, STANDARD_GRAVI
 pub mod platform {
     pub use crate::engine::{Engine, Flow};
     pub use crate::input::RawInput;
-    pub use crate::render::{ProxyId, RenderBackend, Screen};
+    pub use crate::render::{Mesh, ProxyId, RenderBackend, Screen, Texture, VIEW_DISTANCE};
 }

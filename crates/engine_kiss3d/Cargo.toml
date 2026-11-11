@@ -13,3 +13,6 @@ workspace = true
 engine.workspace = true
 glam.workspace = true
 kiss3d.workspace = true
+# kiss3d's own GPU library (same major version), only to name texture
+# settings kiss3d doesn't re-export.
+wgpu = "30"
