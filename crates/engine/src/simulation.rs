@@ -12,17 +12,23 @@ use crate::timestep::FixedTimestep;
 use physics::{Body, DVec3, World};
 
 /// What a game can see of the world: its data, read-only, and none of the
-/// machinery. Cheap to pass by value: 24 bytes, a *borrow* of the world's
-/// bodies (pointer + length), never a copy of them. The physics `World` itself (with `step`) stays inside the
-/// engine: as in Godot or Unreal, physics advances on the engine's tick,
-/// and gameplay code reads state, it doesn't step the simulation.
+/// machinery. Cheap to pass by value: 40 bytes, *borrows* of the engine's
+/// arrays (pointer + length each), never a copy of them. The physics
+/// `World` itself (with `step`) stays inside the engine: as in Godot or
+/// Unreal, physics advances on the engine's tick, and gameplay code reads
+/// state, it doesn't step the simulation.
 #[derive(Clone, Copy, Debug)]
 pub struct WorldView<'a> {
     /// Simulated time since the start, in seconds.
     pub time: f64,
-    /// All simulated objects, in scene order. A shared slice: it can be
-    /// read, not changed.
+    /// All simulated objects, in scene order: their physics state. Shared
+    /// slices: they can be read, not changed.
     pub bodies: &'a [Body],
+    /// Where each body is *drawn* this frame (NED, metres), in the same
+    /// order: between its last two physics states (see `Simulation`).
+    /// What a camera should follow, so it moves as smoothly as the
+    /// picture (like Unity's interpolated transforms).
+    pub drawn: &'a [DVec3],
 }
 
 pub(crate) struct Simulation {
@@ -40,22 +46,33 @@ pub(crate) struct Simulation {
     // TODO(step-08): orientations too (quaternions, blended with `slerp`).
     // TODO(step-11): only for *moving* entities; static ones need none.
     previous: Vec<DVec3>,
+    /// Where each body is drawn this frame (see `advance`): computed once
+    /// per frame, for the renderer and the game alike. Overwritten in
+    /// place: no allocation.
+    drawn: Vec<DVec3>,
 }
 
 impl Simulation {
     /// Starts simulating `world` with physics steps of `dt` seconds.
     pub(crate) fn new(world: World, dt: f64) -> Self {
-        let previous = positions(&world).collect();
+        let previous: Vec<DVec3> = positions(&world).collect();
         Self {
             world,
             clock: FixedTimestep::new(dt),
+            drawn: previous.clone(),
             previous,
         }
     }
 
     /// Feeds the real time the last frame took (seconds), runs as many
     /// fixed physics steps as it calls for (often 0, 1 or 2) and returns
-    /// how many ran.
+    /// how many ran. Then works out where to draw each body.
+    ///
+    /// Drawn positions are `alpha` of the way from each body's position
+    /// before the latest step to its current one. Trade-off: what you see
+    /// is up to one physics step (8 ms at 120 Hz) behind the simulation.
+    /// The alternative, *extrapolating* ahead from the velocity, overshoots
+    /// whenever something changes direction (like a ball landing).
     // TODO(step-06): take the pilot's controls and pass them to each step.
     pub(crate) fn advance(&mut self, frame_time: f64) -> u32 {
         let steps = self.clock.advance(frame_time);
@@ -65,27 +82,20 @@ impl Simulation {
             }
             self.world.step(self.clock.dt());
         }
+        let alpha = self.clock.alpha();
+        let blended = self.previous.iter().zip(positions(&self.world));
+        for (drawn, (previous, current)) in self.drawn.iter_mut().zip(blended) {
+            *drawn = previous.lerp(current, alpha);
+        }
         steps
     }
 
-    /// Where to draw body number `index` (in `world().bodies`) now:
-    /// `alpha` of the way from its position before the latest step to its
-    /// current one.
-    ///
-    /// Trade-off: what you see is up to one physics step (8 ms at 120 Hz)
-    /// behind the simulation. The alternative, *extrapolating* ahead from
-    /// the velocity, overshoots whenever something changes direction (like
-    /// a ball landing).
-    pub(crate) fn drawn_position(&self, index: usize) -> DVec3 {
-        let current = self.world.bodies[index].motion.position;
-        self.previous[index].lerp(current, self.clock.alpha())
-    }
-
-    /// The world's data, read-only, for games.
+    /// The world's data, read-only, for games (and the renderer).
     pub(crate) fn view(&self) -> WorldView<'_> {
         WorldView {
             time: self.world.time(),
             bodies: &self.world.bodies,
+            drawn: &self.drawn,
         }
     }
 
@@ -134,9 +144,7 @@ mod tests {
     }
 
     fn drawn_x(sim: &Simulation) -> Vec<f64> {
-        (0..sim.world().bodies.len())
-            .map(|i| sim.drawn_position(i).x)
-            .collect()
+        sim.view().drawn.iter().map(|p| p.x).collect()
     }
 
     #[test]
@@ -175,15 +183,16 @@ mod tests {
 
     #[test]
     fn the_view_copies_no_body_data() {
-        // 24 bytes whatever the number of bodies: the time, plus a pointer
-        // and a length into the world's own array (checked at compile time).
-        const { assert!(std::mem::size_of::<WorldView<'_>>() == 24) }
-        // And that pointer is the world's memory itself, not a copy.
+        // 40 bytes whatever the number of bodies: the time, plus a pointer
+        // and a length into each of two arrays (checked at compile time).
+        const { assert!(std::mem::size_of::<WorldView<'_>>() == 40) }
+        // And those pointers are the engine's memory itself, not copies.
         let sim = one_ball();
         assert!(std::ptr::eq(
             sim.view().bodies,
             sim.world().bodies.as_slice()
         ));
+        assert!(std::ptr::eq(sim.view().drawn, sim.drawn.as_slice()));
     }
 
     #[test]
@@ -196,6 +205,5 @@ mod tests {
         sim.advance(2.5 * DT);
         // Ball 0: 1 m -> 2 m; ball 1: 8 m -> 6 m; drawn halfway.
         assert_eq!(drawn_x(&sim), [1.5, 7.0]);
-        assert_eq!(sim.drawn_position(1).x, 7.0);
     }
 }

@@ -7,6 +7,7 @@ members = [
     "crates/engine",
     "crates/engine_kiss3d",
     "crates/flightsim",
+    "crates/alloc_count",
 ]
 
 # Settings shared by every crate (they opt in with `edition.workspace = true`, ...).
@@ -20,6 +21,7 @@ publish = false
 physics = { path = "crates/physics" }
 engine = { path = "crates/engine" }
 engine_kiss3d = { path = "crates/engine_kiss3d" }
+alloc_count = { path = "crates/alloc_count" }
 # 2D/3D vector maths (f64 types like DVec2 for physics).
 glam = "0.34"
 # Window, input and rendering (2D now, 3D + glTF models later), on wgpu.

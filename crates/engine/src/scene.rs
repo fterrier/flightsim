@@ -35,8 +35,6 @@ pub struct Scene {
     /// Everything that exists in the world: moving objects and static ones
     /// (the ground) alike.
     pub objects: Vec<SceneObject>,
-    /// Index (in `objects`) of the object the camera follows.
-    pub focus: usize,
     /// Sky colour, in linear light (see `render::Color`).
     pub background: Color,
     /// The world's gravity, in m/s² (usually `physics::STANDARD_GRAVITY`).
@@ -89,7 +87,6 @@ mod tests {
         );
         let scene = Scene {
             objects: vec![ground, ball],
-            focus: 1,
             background: WHITE,
             gravity: STANDARD_GRAVITY,
         };
@@ -107,7 +104,6 @@ mod tests {
         );
         let scene = Scene {
             objects: vec![falling_ground],
-            focus: 0,
             background: WHITE,
             gravity: STANDARD_GRAVITY,
         };

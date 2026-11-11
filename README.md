@@ -45,10 +45,11 @@ The full plan, step by step, is in [ROADMAP.md](ROADMAP.md).
 ```
 crates/
   physics/        engine: physics (pure, no graphics)
-  engine/         engine core: game loop logic, camera, rendering decisions,
-                  input commands, the `Game` trait (no graphics library)
+  engine/         engine core: game loop logic, rendering decisions, input
+                  translation, the `Game` trait (no graphics library)
   engine_kiss3d/  engine platform layer: window, run loop, kiss3d rendering
-  flightsim/      the game: scenarios, key bindings, HUD; the `flightsim` binary
+  flightsim/      the game: scenarios, controls, camera, HUD; the `flightsim` binary
+  alloc_count/    test-only: counts heap allocations (no allocation per frame)
 ```
 
 See [ROADMAP.md](ROADMAP.md) "Architecture" for what each part does.

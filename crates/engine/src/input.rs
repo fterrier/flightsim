@@ -64,20 +64,15 @@ pub enum InputEvent {
     },
 }
 
-/// What the engine can be asked to do.
-// TODO(step-06): flight controls (throttle, pitch), passed on to the
-// simulation; and keys *held* down, not just pressed.
+/// What a game can ask the engine to do: the engine's own services.
+/// Everything else input does (moving the camera, later flying) is the
+/// game's business, in `Game::input`.
+// TODO(step-06): keys *held* down, not just pressed, for flight controls.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Command {
     Quit,
     /// Reload the scene into a fresh simulation.
     Restart,
-    /// Switch to the next camera mode: orbit, chase, fixed.
-    NextCamera,
-    /// Turn the camera around its target by a drag, in logical pixels.
-    Orbit(DVec2),
-    /// Zoom by a scroll distance in pixels (positive zooms in).
-    Zoom(f64),
     /// Debug: make every frame 50 ms longer, like a slow machine.
     ToggleSlowFrames,
     /// Debug: make every frame 400 ms longer, beyond the frame-time cap.

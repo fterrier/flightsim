@@ -65,6 +65,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "alloc_count"
+version = "0.1.0"
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -730,6 +734,7 @@ dependencies = [
 name = "engine"
 version = "0.1.0"
 dependencies = [
+ "alloc_count",
  "glam 0.34.3",
  "physics",
 ]
@@ -838,6 +843,7 @@ dependencies = [
 name = "flightsim"
 version = "0.1.0"
 dependencies = [
+ "alloc_count",
  "engine",
  "engine_kiss3d",
 ]

@@ -1,7 +1,7 @@
 //! The engine core: everything a game needs that isn't specific to one
-//! game. The game loop's logic (fixed steps, interpolation), the camera,
-//! rendering decisions, diagnostics, and the `Game` trait a game implements
-//! to plug in its content, input bindings and HUD.
+//! game. The game loop's logic (fixed steps, interpolation), input
+//! translation, rendering decisions, diagnostics, and the `Game` trait a
+//! game implements to plug in its content, controls, camera and HUD.
 //!
 //! No graphics library here: rendering goes through the `RenderBackend`
 //! interface, implemented by a platform crate (`engine_kiss3d`). So all of
@@ -20,13 +20,12 @@
 //! crate, items shared between modules are `pub(crate)`: every `pub` is
 //! real public API (enforced by the `unreachable_pub` lint).
 
-#[cfg(test)]
-mod alloc_count;
-mod camera;
 mod engine;
 mod ground;
 mod hud;
 mod input;
+#[cfg(test)]
+mod no_alloc;
 mod render;
 mod scene;
 mod simulation;
@@ -36,7 +35,7 @@ mod timestep;
 // physics types their objects are made of), the input they bind.
 pub use engine::Game;
 pub use input::{Command, InputEvent, Key, MouseButton};
-pub use render::{Color, GroundGrid, Shape, Visual};
+pub use render::{Color, GroundGrid, Shape, View, Visual};
 pub use scene::{Scene, SceneObject};
 pub use simulation::WorldView;
 

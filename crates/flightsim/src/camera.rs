@@ -1,7 +1,8 @@
-//! The camera: what it looks at, from where, and how it follows. Pure
+//! The game's camera: what it looks at, from where, how it follows, and
+//! how the player moves it. Game code, as camera scripts are in Unity or
+//! Godot: the engine only draws from the `View` it gets each frame. Pure
 //! logic in world space (NED metres, like the physics), tested without a
-//! window; the renderer converts to its own axes and hands the result to
-//! the backend.
+//! window.
 //!
 //! Like Unreal's spring arm (`USpringArmComponent`) or Cinemachine's
 //! orbital follow, the camera hangs off its target on an *arm*: a
@@ -22,10 +23,10 @@
 
 use std::f64::consts::{PI, TAU};
 
-use physics::{DVec2, DVec3};
+use engine::{DVec2, DVec3};
 
 /// Starting distance from the target, in metres.
-pub(crate) const DEFAULT_DISTANCE: f64 = 40.0;
+const DEFAULT_DISTANCE: f64 = 40.0;
 
 /// Distance limits, in metres: the mouse wheel can't put the camera inside
 /// the target or out of sight of it.

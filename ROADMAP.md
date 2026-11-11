@@ -60,23 +60,27 @@ crates/
                     engine.rs       Engine: runs a frame; the `Game` trait
                     simulation.rs   physics world + fixed steps + interpolation
                     timestep.rs     the fixed-timestep clock
-                    camera.rs       the camera: smooth follow, zoom, what's visible
                     render.rs       Renderer (one proxy per object) against
                                     the RenderBackend interface
                     ground.rs       a ground's mesh and grid texture
                     hud.rs          text overlay; FrameStats (FPS, real time)
-                    input.rs        Key, InputEvent, Command
+                    input.rs        raw input -> InputEvent; Command
                     scene.rs        the scene format (objects = body + visual)
   engine_kiss3d/  ENGINE  platform layer: window, run loop, input
                           translation, RenderBackend with kiss3d   (humble)
-  flightsim/      GAME    what game it is: scenarios, key bindings, HUD
-                          lines; main() = engine_kiss3d::run(FlightSim)
+  flightsim/      GAME    what game it is and how it's played:
+                    scenarios.rs    the scenes, and what the camera follows
+                    camera.rs       orbit / chase / fixed camera, its controls
+                    game.rs         FlightSim: the `Game` (input, view, HUD)
+                    main.rs         engine_kiss3d::run(FlightSim::new())
+  alloc_count/    TESTS   counts heap allocations (test builds only)
 ```
 
-A game plugs in through `engine::Game`: its physics rate, its scene, its
-input bindings (input event -> `Command`) and its own HUD lines, written
-from a `WorldView`: the world's data, borrowed read-only (no copy), without
-the machinery. Stepping physics is the engine's job: `World::step` is
+A game plugs in through `engine::Game`: its physics rate, its scene, how
+it reacts to input (its own controls and camera; engine services through
+a `Command`), the `View` to draw each frame and its own HUD lines. It
+reads a `WorldView`: the world's data, borrowed read-only (no copy),
+including where each body is drawn, without the machinery. Stepping physics is the engine's job: `World::step` is
 public in the `physics` library (as `b2World_Step` in Box2D or
 `PhysicsPipeline::step` in Rapier, for the engine that drives it) but not
 part of the game-facing API. Everything else is the engine's. Games
@@ -131,7 +135,10 @@ step 3, rendering interpolates between the last two physics states,
 storing only the previous *transform* of each moving object before each
 step (`Simulation::previous`, one contiguous array), as engines do (Bevy's `PreviousPhysicalTranslation`,
 Godot and Unity physics interpolation), not a copy of the whole world.
-The camera follows the *interpolated* position, in real frame time
+The blend is written once per frame into a separate *drawn* array
+(`WorldView::drawn`): render state, apart from simulation state, as
+Unity's interpolated `Transform` is apart from `Rigidbody.position`. The
+renderer draws it, and the game's camera follows it, in real frame time
 (Godot's documented approach). Cost: what you see lags the simulation by
 up to one physics step.
 This makes the simulation deterministic: same inputs, same flight.
@@ -252,8 +259,9 @@ allocation.
 One rule applies from the start, because it costs nothing in
 readability: **a steady-state frame allocates no heap memory** (iterators
 instead of temporary `Vec`s, text buffers reused). A test enforces it with
-a counting allocator (`crates/engine/src/alloc_count.rs`): a full
-`Engine` frame, simulation to HUD, allocates nothing.
+a counting allocator (the test-only `alloc_count` crate): a full
+`Engine` frame, simulation to HUD, allocates nothing, and neither does
+the game's per-frame code (its input handling, camera and HUD lines).
 
 The rest isn't measurable with one entity, so steps 1-10 favour
 readability. At step 11, when entities multiply:

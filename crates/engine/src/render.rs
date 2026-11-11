@@ -21,10 +21,9 @@
 use glam::{Vec2, Vec3};
 use physics::DVec3;
 
-use crate::camera::Camera;
 use crate::ground::{grid_texture, ground_mesh};
 use crate::scene::Scene;
-use crate::simulation::Simulation;
+use crate::simulation::WorldView;
 
 /// A colour, in *linear* light (how much light, not how bright it looks).
 /// Backends convert to sRGB, what screens expect, which brightens dark
@@ -99,6 +98,15 @@ impl Default for GroundGrid {
             major_color: Color::rgb(0.5, 0.5, 0.5),
         }
     }
+}
+
+/// Where the camera is and what it looks at, in world space (NED, metres):
+/// what the game decides every frame (`Game::view`), and the renderer
+/// draws from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct View {
+    pub eye: DVec3,
+    pub target: DVec3,
 }
 
 /// How far the camera sees, in metres: the backend's far clipping plane.
@@ -185,9 +193,9 @@ enum Placement {
     UnderCamera { tile: f64 },
 }
 
-/// Draws the world, every scene object according to its visual, as seen by
-/// a given camera. (The camera itself is a game-side object, as in engines;
-/// the HUD is a separate overlay, see `hud`.)
+/// Draws the world, every scene object according to its visual, from the
+/// view the game chose. (How the camera moves is the game's business, as
+/// in engines; the HUD is a separate overlay, see `hud`.)
 pub(crate) struct Renderer {
     /// One render proxy per scene object, in scene order: proxy `i` shows
     /// body `i`.
@@ -221,8 +229,8 @@ impl Renderer {
     }
 
     /// Prepares the world for this frame: camera and proxies.
-    pub(crate) fn draw(&self, backend: &mut impl RenderBackend, sim: &Simulation, camera: &Camera) {
-        backend.set_camera(to_render(camera.eye()), to_render(camera.target));
+    pub(crate) fn draw(&self, backend: &mut impl RenderBackend, world: WorldView<'_>, view: View) {
+        backend.set_camera(to_render(view.eye), to_render(view.target));
 
         // ═══════════════════════════════════════════════════════════════
         //  PHYSICS -> SCENE
@@ -233,12 +241,11 @@ impl Renderer {
         //  in one loop over all objects.
         //  TODO(step-08): orientations too (position + rotation).
         // ═══════════════════════════════════════════════════════════════
-        for (body, (proxy, placement)) in self.proxies.iter().enumerate() {
-            let position = sim.drawn_position(body);
+        for ((proxy, placement), &position) in self.proxies.iter().zip(world.drawn) {
             let position = match *placement {
                 Placement::AtBody => position,
                 Placement::UnderCamera { tile } => {
-                    let under_eye = (camera.eye().truncate() / tile).round() * tile;
+                    let under_eye = (view.eye.truncate() / tile).round() * tile;
                     under_eye.extend(position.z)
                 }
             };
@@ -362,6 +369,7 @@ mod tests {
     use super::fakes::{Created, RecordingBackend};
     use super::*;
     use crate::scene::SceneObject;
+    use crate::simulation::Simulation;
     use physics::{Body, BodyType, Collider, Motion, STANDARD_GRAVITY};
 
     const BALL: Visual = Visual {
@@ -411,11 +419,9 @@ mod tests {
         }
     }
 
-    /// A scene of `objects`, focused on the first one.
     fn scene(objects: Vec<SceneObject>) -> Scene {
         Scene {
             objects,
-            focus: 0,
             background: BACKGROUND,
             gravity: STANDARD_GRAVITY,
         }
@@ -426,15 +432,18 @@ mod tests {
         scene(vec![ground(0.0), ball_at(0.0, 0.0)])
     }
 
-    /// The scene's simulation, a renderer for it on `backend`, and a camera
-    /// looking at `target`.
-    fn setup(
-        scene: &Scene,
-        backend: &mut RecordingBackend,
-        target: DVec3,
-    ) -> (Simulation, Renderer, Camera) {
+    /// The scene's simulation, and a renderer for it on `backend`.
+    fn setup(scene: &Scene, backend: &mut RecordingBackend) -> (Simulation, Renderer) {
         let sim = Simulation::new(scene.world().expect("a valid scene"), 1.0 / 64.0);
-        (sim, Renderer::new(backend, scene), Camera::new(target))
+        (sim, Renderer::new(backend, scene))
+    }
+
+    /// Looking at the origin from `eye`.
+    fn from(eye: DVec3) -> View {
+        View {
+            eye,
+            target: DVec3::ZERO,
+        }
     }
 
     #[test]
@@ -455,7 +464,7 @@ mod tests {
     #[test]
     fn creates_one_proxy_per_object_with_background_and_sun() {
         let mut backend = RecordingBackend::new(SCREEN);
-        setup(&ball_on_the_ground(), &mut backend, DVec3::ZERO);
+        setup(&ball_on_the_ground(), &mut backend);
         assert_eq!(backend.proxies.len(), 2);
         assert_eq!(
             backend.proxies[1].0,
@@ -473,7 +482,7 @@ mod tests {
     #[test]
     fn a_ground_plane_becomes_its_grid_mesh_and_texture() {
         let mut backend = RecordingBackend::new(SCREEN);
-        setup(&ball_on_the_ground(), &mut backend, DVec3::ZERO);
+        setup(&ball_on_the_ground(), &mut backend);
         let grid = GroundGrid::default();
         assert_eq!(
             backend.proxies[0].0,
@@ -489,29 +498,27 @@ mod tests {
         let mut backend = RecordingBackend::new(SCREEN);
         // The ground in between, to check each proxy follows its own body.
         let objects = vec![ball_at(1.0, 2.0), ground(0.0), ball_at(-3.0, 4.0)];
-        let (sim, renderer, camera) = setup(&scene(objects), &mut backend, DVec3::ZERO);
-        renderer.draw(&mut backend, &sim, &camera);
+        let (sim, renderer) = setup(&scene(objects), &mut backend);
+        renderer.draw(&mut backend, sim.view(), from(DVec3::new(0.0, 0.0, -10.0)));
         // NED (north, east, -0.4) -> render (east, 0.4, -north).
         assert_eq!(backend.proxies[0].1, Some(Vec3::new(2.0, 0.4, -1.0)));
         assert_eq!(backend.proxies[2].1, Some(Vec3::new(4.0, 0.4, 3.0)));
     }
 
     /// Where the ground plane of a scene with a ground `elevation` metres
-    /// up is drawn, with the camera looking at `target`.
-    fn ground_drawn_at(elevation: f64, target: DVec3) -> Vec3 {
+    /// up is drawn, seen from `eye`.
+    fn ground_drawn_at(elevation: f64, eye: DVec3) -> Vec3 {
         let mut backend = RecordingBackend::new(SCREEN);
-        let (sim, renderer, camera) = setup(&scene(vec![ground(elevation)]), &mut backend, target);
-        renderer.draw(&mut backend, &sim, &camera);
+        let (sim, renderer) = setup(&scene(vec![ground(elevation)]), &mut backend);
+        renderer.draw(&mut backend, sim.view(), from(eye));
         backend.proxies[0].1.expect("the ground is placed")
     }
 
     #[test]
     fn the_endless_ground_is_drawn_under_the_camera_at_its_altitude() {
-        // A plateau 7 m up; the camera's eye is somewhere south-west of
-        // its target, 40 m away.
-        let target = DVec3::new(1000.0, -500.0, -7.0);
-        let eye = Camera::new(target).eye();
-        let drawn = ground_drawn_at(7.0, target);
+        // A plateau 7 m up, seen from 30 m above it, far from the origin.
+        let eye = DVec3::new(1003.0, -497.0, -37.0);
+        let drawn = ground_drawn_at(7.0, eye);
         assert_eq!(drawn.y, 7.0); // render y is up
         // Under the eye, to within a tile (10 m): it covers what's in view
         // all around.
@@ -531,8 +538,11 @@ mod tests {
         // Wherever the camera is, the ground is moved by whole major cells
         // (10 m): its texture repeats every tile, so the grid lines land
         // exactly where they were.
-        for target in [DVec3::new(3.0, 4.0, 0.0), DVec3::new(-1234.5, 678.9, -20.0)] {
-            let drawn = ground_drawn_at(0.0, target);
+        for eye in [
+            DVec3::new(3.0, 4.0, -9.0),
+            DVec3::new(-1234.5, 678.9, -20.0),
+        ] {
+            let drawn = ground_drawn_at(0.0, eye);
             assert_eq!((drawn.x % 10.0, drawn.z % 10.0), (0.0, 0.0), "{drawn}");
         }
     }
@@ -542,22 +552,24 @@ mod tests {
         // Retained mode: the proxy lives across frames; only its position
         // is updated.
         let mut backend = RecordingBackend::new(SCREEN);
-        let (sim, renderer, camera) = setup(&ball_on_the_ground(), &mut backend, DVec3::ZERO);
+        let (sim, renderer) = setup(&ball_on_the_ground(), &mut backend);
         for _ in 0..3 {
-            renderer.draw(&mut backend, &sim, &camera);
+            renderer.draw(&mut backend, sim.view(), from(DVec3::new(0.0, 0.0, -10.0)));
         }
         assert_eq!(backend.proxies.len(), 2);
     }
 
     #[test]
-    fn camera_is_sent_in_render_axes() {
+    fn the_view_is_sent_in_render_axes() {
         let mut backend = RecordingBackend::new(SCREEN);
-        let target = DVec3::new(40.0, 12.0, -5.0);
-        let (sim, renderer, camera) = setup(&ball_on_the_ground(), &mut backend, target);
-        renderer.draw(&mut backend, &sim, &camera);
-        let (eye, sent_target) = backend.camera.expect("a camera is set");
-        assert_eq!(sent_target, to_render(target));
-        assert_eq!(eye, to_render(camera.eye()));
+        let view = View {
+            eye: DVec3::new(10.0, -20.0, -30.0),
+            target: DVec3::new(40.0, 12.0, -5.0),
+        };
+        let (sim, renderer) = setup(&ball_on_the_ground(), &mut backend);
+        renderer.draw(&mut backend, sim.view(), view);
+        let camera = backend.camera.expect("a camera is set");
+        assert_eq!(camera, (to_render(view.eye), to_render(view.target)));
     }
 
     #[test]

@@ -113,8 +113,11 @@ screen.
   fine in tests.
 - **No heap allocation per frame** in the game loop: iterate instead of
   collecting into temporary `Vec`s, reuse buffers (`String::clear` keeps
-  capacity). Anything new in the loop goes into the
-  `a_steady_state_frame_allocates_nothing` test (`alloc_count.rs`).
+  capacity). Anything new in the loop goes into a zero-allocation test:
+  the engine's (`crates/engine/src/no_alloc.rs`) or, for game code run
+  every frame (input, camera, HUD), the game's
+  (`crates/flightsim/src/no_alloc.rs`). Both count with the `alloc_count`
+  test-only crate.
 - Separate data by concept, as engines do: a body (motion) is not its
   collider (shape); simulation state is not render state.
 - **Engine vs game**: the `physics`, `engine` and `engine_kiss3d` crates
@@ -132,7 +135,8 @@ screen.
   `unreachable_pub` lint (workspace-wide) rejects a `pub` that other crates
   can't reach. Games get *data* (`WorldView`: a read-only borrow of the
   world, no copy), never engine machinery (`World::step`, `Simulation`,
-  `Renderer`, `Camera`).
+  `Renderer`). What a game decides (its controls, its camera) is game
+  code: the engine asks (`Game::input`, `Game::view`), it doesn't decide.
 
 ## Git
 

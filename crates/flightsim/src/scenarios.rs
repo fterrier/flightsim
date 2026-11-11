@@ -10,13 +10,22 @@ use engine::{
 /// Flat ground at sea level, where the balls start.
 const GROUND_ELEVATION: f64 = 0.0;
 
+/// A scene to play, and which of its objects the camera follows.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Scenario {
+    pub(crate) scene: Scene,
+    /// Index of the followed object in `scene.objects` (and so of its body
+    /// in the world).
+    pub(crate) focus: usize,
+}
+
 /// Three balls resting on flat ground at sea level, thrown at once in different
 /// directions: a small one north-west, a high one north (followed by the
 /// camera) and a big flat one north-east. They pass through each other:
 /// collisions between objects come in step 12.
 // TODO(step-09): scenarios become data files, like the aircraft.
-pub(crate) fn ball_throws() -> Scene {
-    Scene {
+pub(crate) fn ball_throws() -> Scenario {
+    let scene = Scene {
         objects: vec![
             ground(),
             ball(
@@ -38,10 +47,13 @@ pub(crate) fn ball_throws() -> Scene {
                 Color::rgb(1.0, 0.8, 0.1),
             ),
         ],
-        focus: 2, // the orange ball
         // Linear light: tiny values for a dark night blue.
         background: Color::rgb(0.006, 0.008, 0.015),
         gravity: STANDARD_GRAVITY,
+    };
+    Scenario {
+        scene,
+        focus: 2, // the orange ball
     }
 }
 
@@ -99,6 +111,7 @@ mod tests {
     /// The scenario's objects with a body of type `body_type`.
     fn objects(body_type: BodyType) -> Vec<SceneObject> {
         ball_throws()
+            .scene
             .objects
             .into_iter()
             .filter(|object| object.body.body_type == body_type)
@@ -154,7 +167,7 @@ mod tests {
 
     #[test]
     fn the_camera_follows_a_ball() {
-        let scene = ball_throws();
-        assert_eq!(scene.objects[scene.focus].body.body_type, BodyType::Dynamic);
+        let Scenario { scene, focus } = ball_throws();
+        assert_eq!(scene.objects[focus].body.body_type, BodyType::Dynamic);
     }
 }

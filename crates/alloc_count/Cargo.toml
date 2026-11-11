@@ -1,0 +1,10 @@
+[package]
+name = "alloc_count"
+version = "0.1.0"
+description = "Test-only tool: counts heap allocations, to check that a frame allocates nothing."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
