@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use crate::camera::Camera;
 use crate::hud::{FrameStats, Hud};
-use crate::input::{Command, InputEvent};
+use crate::input::{Command, InputEvent, Mouse, RawInput};
 use crate::render::{RenderBackend, Renderer};
 use crate::scene::Scene;
 use crate::simulation::{Simulation, WorldView};
@@ -91,6 +91,11 @@ pub struct Engine<G: Game> {
     sim: Simulation,
     /// Where to look from, and how far: follows the scene's focus.
     camera: Camera,
+    /// Turns raw mouse reports into drags.
+    mouse: Mouse,
+    /// Physical pixels per logical pixel, as of the latest frame: drags
+    /// are converted to logical pixels with it.
+    screen_scale: f64,
     renderer: Renderer,
     hud: Hud,
     stats: FrameStats,
@@ -113,6 +118,8 @@ impl<G: Game> Engine<G> {
             scene,
             sim,
             camera,
+            mouse: Mouse::default(),
+            screen_scale: f64::from(backend.screen().scale),
             renderer,
             hud: Hud::default(),
             stats: FrameStats::default(),
@@ -122,9 +129,14 @@ impl<G: Game> Engine<G> {
         engine
     }
 
-    /// Reacts to one input event, through the game's bindings.
-    pub fn input(&mut self, event: InputEvent) -> Flow {
-        match self.game.command_for(event) {
+    /// Reacts to one raw input report from the platform: as a game-level
+    /// event, through the game's bindings.
+    pub fn input(&mut self, raw: RawInput) -> Flow {
+        let command = self
+            .mouse
+            .translate(raw, self.screen_scale)
+            .and_then(|event| self.game.command_for(event));
+        match command {
             Some(command) => self.execute(command),
             None => Flow::Continue,
         }
@@ -134,11 +146,14 @@ impl<G: Game> Engine<G> {
     /// camera, prepare the picture (the platform then shows it).
     pub fn frame(&mut self, backend: &mut impl RenderBackend, frame_time: f64) {
         self.stats.record(frame_time);
+        self.screen_scale = f64::from(backend.screen().scale);
         let steps = self.sim.advance(frame_time);
         // The camera glides towards where the focused object is drawn
-        // (interpolated), in real frame time.
+        // (interpolated), in real frame time; a chase camera also swings
+        // round according to its velocity.
         let target = self.sim.drawn_position(self.scene.focus);
-        self.camera.update(target, frame_time);
+        let velocity = self.sim.world().bodies[self.scene.focus].motion.velocity;
+        self.camera.update(target, velocity, frame_time);
         self.draw(backend, steps);
     }
 
@@ -160,7 +175,8 @@ impl<G: Game> Engine<G> {
                 self.sim = Simulation::new(self.scene.world(), self.game.physics_dt());
                 self.stats.restart_clock();
             }
-            Command::ToggleCamera => self.camera.toggle_mode(),
+            Command::NextCamera => self.camera.next_mode(),
+            Command::Orbit(drag) => self.camera.orbit(drag),
             Command::Zoom(scroll) => self.camera.zoom_by(scroll),
             Command::ToggleSlowFrames => self.lag = self.lag.toggled(DebugLag::Slow),
             Command::ToggleStalledFrames => self.lag = self.lag.toggled(DebugLag::Stalled),
@@ -212,7 +228,7 @@ impl<G: Game> Engine<G> {
 #[cfg(test)]
 pub(crate) mod testing {
     use super::*;
-    use crate::input::Key;
+    use crate::input::{Key, MouseButton};
     use crate::render::{Color, GroundGrid, Shape, Visual, WHITE};
     use crate::scene::SceneObject;
     use physics::{Body, BodyType, Collider, DVec3, Motion, STANDARD_GRAVITY};
@@ -275,11 +291,15 @@ pub(crate) mod testing {
             match event {
                 InputEvent::KeyPressed(Key::Q) => Some(Command::Quit),
                 InputEvent::KeyPressed(Key::R) => Some(Command::Restart),
-                InputEvent::KeyPressed(Key::C) => Some(Command::ToggleCamera),
+                InputEvent::KeyPressed(Key::C) => Some(Command::NextCamera),
                 InputEvent::KeyPressed(Key::L) => Some(Command::ToggleSlowFrames),
                 InputEvent::KeyPressed(Key::K) => Some(Command::ToggleStalledFrames),
                 InputEvent::Scroll(amount) => Some(Command::Zoom(amount)),
-                InputEvent::KeyPressed(_) => None,
+                InputEvent::MouseDragged {
+                    button: MouseButton::Left,
+                    delta,
+                } => Some(Command::Orbit(delta)),
+                InputEvent::KeyPressed(_) | InputEvent::MouseDragged { .. } => None,
             }
         }
 
@@ -294,10 +314,11 @@ pub(crate) mod testing {
 mod tests {
     use super::testing::TestGame;
     use super::*;
-    use crate::input::Key;
+    use crate::input::{Key, MouseButton};
     use crate::render::Screen;
     use crate::render::fakes::RecordingBackend;
     use glam::Vec3;
+    use physics::DVec2;
 
     /// Exact in binary floating point.
     const FRAME: f64 = 1.0 / 64.0;
@@ -324,7 +345,7 @@ mod tests {
     }
 
     fn press(engine: &mut Engine<TestGame>, key: Key) -> Flow {
-        engine.input(InputEvent::KeyPressed(key))
+        engine.input(RawInput::KeyPressed(key))
     }
 
     fn hud_text(backend: &RecordingBackend) -> String {
@@ -375,7 +396,7 @@ mod tests {
         let text = hud_text(&backend);
         assert!(text.starts_with("-- FPS"), "{text}"); // not measured yet
         assert!(text.contains("2 physics steps this frame"), "{text}");
-        assert!(text.contains("camera: follow"), "{text}");
+        assert!(text.contains("camera: orbit"), "{text}");
         assert!(text.ends_with("test game: focus 2.0 m north"), "{text}");
     }
 
@@ -419,7 +440,51 @@ mod tests {
         press(&mut engine, Key::C);
         backend.texts.clear();
         engine.frame(&mut backend, FRAME);
-        assert!(hud_text(&backend).contains("camera: fixed"));
+        assert!(hud_text(&backend).contains("camera: chase"));
+    }
+
+    #[test]
+    fn the_chase_camera_gets_behind_the_focused_object() {
+        // The ball slides north: after 10 s (20 half-lives of the swing)
+        // the camera looks at it from the south. Render axes: north is -z,
+        // so south of the target means a larger z.
+        let (mut engine, mut backend) = engine(sliding_ball());
+        press(&mut engine, Key::C);
+        for _ in 0..(10 * 64) {
+            engine.frame(&mut backend, FRAME);
+        }
+        let (eye, target) = backend.camera.expect("a camera is set");
+        assert!(eye.z > target.z, "south of the target: {eye} vs {target}");
+        assert!(
+            (eye.x - target.x).abs() < 0.01,
+            "right behind: {eye} vs {target}"
+        );
+    }
+
+    #[test]
+    fn dragging_with_the_bound_button_orbits_the_camera() {
+        let (mut engine, mut backend) = engine(sliding_ball());
+        let eye = |backend: &RecordingBackend| backend.camera.expect("a camera is set").0;
+        let before = eye(&backend);
+        let mouse = |button, pressed| RawInput::MouseButton { button, pressed };
+        let cursor = |x| RawInput::CursorMoved(DVec2::new(x, 300.0));
+
+        // Not the bound button: nothing turns.
+        engine.input(cursor(500.0));
+        engine.input(mouse(MouseButton::Right, true));
+        engine.input(cursor(700.0));
+        engine.input(mouse(MouseButton::Right, false));
+        engine.draw(&mut backend, 0);
+        assert_eq!(eye(&backend), before);
+
+        // The left button: the camera swings round the (still) target.
+        engine.input(mouse(MouseButton::Left, true));
+        engine.input(cursor(900.0));
+        engine.draw(&mut backend, 0);
+        let after = eye(&backend);
+        assert_ne!(after, before);
+        let target = backend.camera.expect("a camera is set").1;
+        assert!((after.distance(target) - before.distance(target)).abs() < 1e-3);
     }
 
     #[test]
@@ -430,7 +495,7 @@ mod tests {
             eye.distance(target)
         };
         let before = distance(&backend);
-        engine.input(InputEvent::Scroll(300.0)); // one "doubling": 2x closer
+        engine.input(RawInput::Scroll(300.0)); // one "doubling": 2x closer
         engine.frame(&mut backend, FRAME);
         assert!((distance(&backend) - before / 2.0).abs() < 1e-3);
     }

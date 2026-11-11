@@ -12,12 +12,12 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 
-use engine::platform::{Engine, Flow, ProxyId, RenderBackend, Screen};
-use engine::{Color, Game, InputEvent, Key};
+use engine::platform::{Engine, Flow, ProxyId, RawInput, RenderBackend, Screen};
+use engine::{Color, DVec2, Game, Key, MouseButton};
 use glam::{Vec2, Vec3};
 use kiss3d::camera::OrbitCamera3d;
 use kiss3d::color::Color as Kiss3dColor;
-use kiss3d::event::{Action, Key as Kiss3dKey, WindowEvent};
+use kiss3d::event::{Action, Key as Kiss3dKey, MouseButton as Kiss3dButton, WindowEvent};
 use kiss3d::glamx::{Vec2 as Kiss3dVec2, Vec3 as Kiss3dVec3};
 use kiss3d::light::Light;
 use kiss3d::scene::SceneNode3d;
@@ -51,7 +51,7 @@ async fn run_async(title: &str, game: impl Game) {
 
         // Input: kiss3d events, translated into the engine's own.
         for event in backend.window.events().iter() {
-            if let Some(input) = input_event(event.value)
+            if let Some(input) = raw_input(event.value)
                 && engine.input(input) == Flow::Quit
             {
                 return;
@@ -177,11 +177,26 @@ fn kiss3d_color(c: Color) -> Kiss3dColor {
     Kiss3dColor::new(c.r, c.g, c.b, c.a)
 }
 
-/// A kiss3d window event as an engine input event, if the engine cares.
-fn input_event(event: WindowEvent) -> Option<InputEvent> {
+/// A kiss3d window event as raw engine input, if the engine cares.
+fn raw_input(event: WindowEvent) -> Option<RawInput> {
     match event {
-        WindowEvent::Key(key, Action::Press, _) => engine_key(key).map(InputEvent::KeyPressed),
-        WindowEvent::Scroll(_, scroll, _) => Some(InputEvent::Scroll(scroll)),
+        WindowEvent::Key(key, Action::Press, _) => engine_key(key).map(RawInput::KeyPressed),
+        WindowEvent::Scroll(_, scroll, _) => Some(RawInput::Scroll(scroll)),
+        WindowEvent::MouseButton(button, action, _) => Some(RawInput::MouseButton {
+            button: engine_button(button)?,
+            pressed: action == Action::Press,
+        }),
+        WindowEvent::CursorPos(x, y, _) => Some(RawInput::CursorMoved(DVec2::new(x, y))),
+        _ => None,
+    }
+}
+
+/// A kiss3d mouse button as an engine one, for the buttons the engine knows.
+fn engine_button(button: Kiss3dButton) -> Option<MouseButton> {
+    match button {
+        Kiss3dButton::Button1 => Some(MouseButton::Left),
+        Kiss3dButton::Button2 => Some(MouseButton::Right),
+        Kiss3dButton::Button3 => Some(MouseButton::Middle),
         _ => None,
     }
 }

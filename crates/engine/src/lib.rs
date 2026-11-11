@@ -34,7 +34,7 @@ mod timestep;
 // For games: what they implement, the content they describe (including the
 // physics types their objects are made of), the input they bind.
 pub use engine::Game;
-pub use input::{Command, InputEvent, Key};
+pub use input::{Command, InputEvent, Key, MouseButton};
 pub use render::{Color, GroundGrid, Shape, Visual};
 pub use scene::{Scene, SceneObject};
 pub use simulation::WorldView;
@@ -46,8 +46,9 @@ pub use simulation::WorldView;
 pub use physics::{Body, BodyType, Collider, DVec2, DVec3, Motion, STANDARD_GRAVITY};
 
 /// For platform crates only (window, game loop, graphics backend, like
-/// `engine_kiss3d`): the engine they run, and the interface they implement
-/// to draw with a graphics library. Games never need this: they implement
+/// `engine_kiss3d`): the engine they run, the raw input they report to it,
+/// and the interface they implement to draw with a graphics library.
+/// Games never need this: they implement
 /// `Game` and call their platform's `run`.
 ///
 /// Rust has no "friend" visibility between crates, so these items must be
@@ -55,5 +56,6 @@ pub use physics::{Body, BodyType, Collider, DVec2, DVec3, Motion, STANDARD_GRAVI
 /// them out of the games' API (CI checks the game never imports it).
 pub mod platform {
     pub use crate::engine::{Engine, Flow};
+    pub use crate::input::RawInput;
     pub use crate::render::{ProxyId, RenderBackend, Screen};
 }

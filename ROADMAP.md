@@ -18,7 +18,7 @@ git checkout step-01            # the code as it was after step 1
 | ✅ | **3. Smooth 2D camera** | Motion stays smooth at any display rate; the camera glides after the ball, follows it vertically, zoom is limited; a key switches follow / fixed camera | Interpolation between physics states, frame-rate-independent smoothing, dead zones, camera as a tested module |
 | ✅ | **3b. Engine / game split** | Same picture; the code is now a reusable engine plus a game built on it | Engine vs game (and the dependency direction), `Game` trait, engine-owned input and the Command pattern, humble platform layer, separate real/fixed clocks |
 | ✅ | **4. Ball in 3D** | A ball thrown in any direction over a ground grid, lit in 3D | `DVec3`, axis conventions: NED physics vs y-up graphics, converted in one place in the renderer (see decision below) |
-| ⬜ | **5. 3D cameras** | Chase camera (smoothed, behind the target) and orbit camera (mouse), switched with a key | 3D camera maths: look-at, spherical coordinates, smoothing in 3D |
+| ✅ | **5. 3D cameras** | Chase camera (smoothed, behind the target) and orbit camera (mouse), switched with a key | 3D camera maths: look-at, spherical coordinates, smoothing in 3D |
 | ⬜ | **6. Point-mass plane** | Throttle and pitch keys; the plane rolls, lifts off, climbs, stalls (moving in the vertical plane) | Mass, lift, drag, thrust, weight, air density, angle of attack |
 | ⬜ | **7. Plane that pitches** | Pitch is now a dynamic state driven by the elevator; the plane settles at its own trim attitude | Moments, moment of inertia, static stability (the tail), trim |
 | ⬜ | **8. Full 6 degrees of freedom** | Roll and yaw: the plane banks and turns | Body vs world frames, quaternions, inertia tensor |

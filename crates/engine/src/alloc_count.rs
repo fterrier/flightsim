@@ -52,8 +52,10 @@ mod tests {
     use super::*;
     use crate::engine::Engine;
     use crate::engine::testing::TestGame;
+    use crate::input::{Key, MouseButton, RawInput};
     use crate::render::Screen;
     use crate::render::fakes::NullBackend;
+    use physics::DVec2;
 
     #[test]
     fn the_counter_sees_allocations() {
@@ -78,11 +80,20 @@ mod tests {
             focus: 2,
         };
         let mut engine = Engine::new(&mut backend, game);
+        // The chase camera, the busiest one.
+        engine.input(RawInput::KeyPressed(Key::C));
 
         // 10 simulated minutes of frames: numbers on the HUD grow longer,
-        // the FPS readout appears... still no allocation.
+        // the FPS readout appears... still no allocation. The mouse drags
+        // all along, orbiting the camera.
         let count = allocations_in(|| {
-            for _ in 0..36_000 {
+            engine.input(RawInput::MouseButton {
+                button: MouseButton::Left,
+                pressed: true,
+            });
+            for frame in 0..36_000 {
+                let x = f64::from(frame % 1000);
+                engine.input(RawInput::CursorMoved(DVec2::new(x, 500.0)));
                 engine.frame(&mut backend, 1.0 / 60.0);
             }
         });
