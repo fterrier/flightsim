@@ -92,8 +92,9 @@ git checkout master       # back to the latest version
 | Key | Action |
 |---|---|
 | `Esc` | Quit |
-| `R` | Throw the balls again (reloads the scene; restarts sim and real time) |
-| `C` | Switch camera, in turn: orbit (glides after the orange ball, starting from the south-west), chase (swings round behind the ball's motion), fixed (stays put) |
+| `W` `A` `S` `D` | Push the ball, relative to the camera: away from it, left, towards it, right (held down) |
+| `R` | Restart: the ball back at rest at the start (reloads the scene; restarts sim and real time) |
+| `C` | Switch camera, in turn: orbit (glides after the ball, starting from the south-west), chase (swings round behind the ball's motion), fixed (stays put) |
 | Left-drag | Turn the camera around what it looks at (any mode; the chase camera then swings back behind) |
 | `L` | Debug, on/off: slow frames (+50 ms each, ~15 FPS). The simulation keeps real-time pace. |
 | `K` | Debug, on/off: stalled frames (+400 ms each). Frame time is capped, so sim time falls behind real time. |

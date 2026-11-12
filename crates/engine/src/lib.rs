@@ -38,7 +38,7 @@ pub use engine::Game;
 pub use input::{Command, InputEvent, Key, MouseButton};
 pub use render::{Color, Material, PlaneSize, Shape, TextureId, TiledTexture, View, Visual};
 pub use scene::{Scene, SceneObject};
-pub use simulation::WorldView;
+pub use simulation::{Forces, WorldView};
 pub use texture::Texture;
 
 // The engine is the games' single dependency: the physics crate is an

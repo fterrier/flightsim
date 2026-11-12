@@ -138,6 +138,15 @@ impl Camera {
         self.target + arm_direction(self.yaw, self.pitch) * self.distance
     }
 
+    /// Which way the camera faces, flattened onto the ground: a unit
+    /// vector (north, east), from the eye towards the target. "Forward"
+    /// for controls relative to the camera, as third-person games do.
+    pub(crate) fn ground_forward(&self) -> DVec2 {
+        // The arm points from the target to the eye: facing is the
+        // opposite compass direction. The pitch limits keep it defined.
+        -DVec2::new(self.yaw.cos(), self.yaw.sin())
+    }
+
     /// Zooms in (positive `scroll`: closer) or out (negative: further),
     /// `scroll` being the scroll distance in pixels.
     pub(crate) fn zoom_by(&mut self, scroll: f64) {
@@ -303,6 +312,20 @@ mod tests {
         assert!(close(arm_direction(PI / 2.0, 0.0), DVec3::Y)); // east
         assert!(close(arm_direction(PI, 0.0), -DVec3::X)); // south
         assert!(close(arm_direction(1.0, PI / 2.0), -DVec3::Z)); // straight up
+    }
+
+    #[test]
+    fn the_camera_faces_from_its_eye_towards_its_target_on_the_ground() {
+        let mut camera = settled(DVec3::ZERO);
+        // From the south-west, it faces north-east.
+        let facing = camera.ground_forward();
+        let north_east = DVec2::new(1.0, 1.0).normalize();
+        assert!((facing - north_east).length() < 1e-12, "{facing}");
+        // Swung round to the north of its target, it faces south.
+        camera.yaw = 0.0;
+        assert_eq!(camera.ground_forward(), DVec2::new(-1.0, 0.0));
+        let flat = (camera.target - camera.eye()).truncate().normalize();
+        assert!((camera.ground_forward() - flat).length() < 1e-12);
     }
 
     #[test]

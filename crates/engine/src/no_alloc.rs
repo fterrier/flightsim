@@ -8,7 +8,7 @@ mod tests {
     use crate::render::Screen;
     use crate::render::fakes::NullBackend;
     use alloc_count::{CountingAllocator, allocations_in};
-    use physics::DVec2;
+    use physics::{DVec2, DVec3};
 
     #[global_allocator]
     static ALLOCATOR: CountingAllocator = CountingAllocator;
@@ -23,7 +23,8 @@ mod tests {
             height: 1440.0,
             scale: 2.0,
         });
-        let game = TestGame::new(vec![(-3.0, 6.0), (0.0, 8.0), (3.0, 10.0)], 2);
+        let mut game = TestGame::new(vec![(-3.0, 6.0), (0.0, 8.0), (3.0, 10.0)], 2);
+        game.push = DVec3::new(1.0, 2.0, 0.0); // every physics step
         let mut engine = Engine::new(&mut backend, game);
 
         // 10 simulated minutes of frames: numbers on the HUD grow longer,

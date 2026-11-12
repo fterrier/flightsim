@@ -15,17 +15,15 @@
 use std::fmt::{self, Write};
 use std::time::Duration;
 
-use physics::World;
+use physics::{Body, World};
 
 use crate::hud::{FrameStats, Hud};
 use crate::input::{Command, InputEvent, Mouse, RawInput};
 use crate::render::{RenderBackend, Renderer, View};
 use crate::scene::Scene;
-use crate::simulation::{Simulation, WorldView};
+use crate::simulation::{Forces, Simulation, WorldView};
 
 /// What a game provides to the engine.
-// TODO(step-06): a per-physics-step hook for game logic (mission rules, an
-// autopilot), like Unity's `FixedUpdate`, if commands aren't enough.
 pub trait Game {
     /// Seconds per physics step: the fixed timestep (e.g. 1/120). A game
     /// setting, like Godot's "physics ticks per second".
@@ -42,6 +40,14 @@ pub trait Game {
     /// `SceneManager.sceneLoaded`). Optional: does nothing unless a game
     /// needs it.
     fn scene_loaded(&mut self, _world: WorldView<'_>) {}
+
+    /// Called before each physics step, with the bodies as they are: game
+    /// logic that acts on the world, at the physics rate rather than the
+    /// frame rate (Unity's `FixedUpdate`, Godot's `_physics_process`). It
+    /// pushes bodies with `forces`, for this step only. Input arrives per
+    /// frame (`input`); a game records it there and acts on it here.
+    /// Optional: does nothing unless a game needs it.
+    fn fixed_update(&mut self, _bodies: &[Body], _forces: &mut Forces<'_>) {}
 
     /// Reacts to one input event. The bindings and the game's own controls
     /// (its camera; later, its aircraft) are the game's, like Godot's
@@ -166,7 +172,10 @@ impl<G: Game> Engine<G> {
     pub fn frame(&mut self, backend: &mut impl RenderBackend, frame_time: f64) {
         self.stats.record(frame_time);
         self.screen_scale = f64::from(backend.screen().scale);
-        let steps = self.sim.advance(frame_time);
+        let game = &mut self.game;
+        let steps = self.sim.advance(frame_time, |bodies, forces| {
+            game.fixed_update(bodies, forces)
+        });
         let view = self.game.view(self.sim.view(), frame_time);
         self.draw(backend, view, steps);
     }
@@ -265,6 +274,10 @@ pub(crate) mod testing {
         /// its latest view.
         pub scenes_loaded: u32,
         loads: u32,
+        /// The force (N, NED) the game pushes its focus with, every step.
+        pub push: DVec3,
+        /// How many physics steps the game has acted before.
+        pub steps_seen: u32,
     }
 
     impl TestGame {
@@ -276,6 +289,8 @@ pub(crate) mod testing {
                 last_frame_time: None,
                 scenes_loaded: 0,
                 loads: 0,
+                push: DVec3::ZERO,
+                steps_seen: 0,
             }
         }
     }
@@ -307,7 +322,7 @@ pub(crate) mod testing {
             };
             let ball = |&(north, speed): &(f64, f64)| SceneObject {
                 body: Body {
-                    body_type: BodyType::Dynamic,
+                    body_type: BodyType::Dynamic { mass: 1.0 },
                     motion: Motion {
                         position: DVec3::new(north, 0.0, -0.5),
                         velocity: DVec3::new(speed, 0.0, 0.0),
@@ -331,6 +346,11 @@ pub(crate) mod testing {
 
         fn scene_loaded(&mut self, _world: WorldView<'_>) {
             self.loads += 1;
+        }
+
+        fn fixed_update(&mut self, _bodies: &[Body], forces: &mut Forces<'_>) {
+            self.steps_seen += 1;
+            forces.add(self.focus, self.push);
         }
 
         fn input(&mut self, event: InputEvent) -> Option<Command> {
@@ -369,7 +389,7 @@ mod tests {
     use crate::render::Screen;
     use crate::render::fakes::RecordingBackend;
     use glam::Vec3;
-    use physics::DVec2;
+    use physics::{DVec2, DVec3};
 
     /// Exact in binary floating point.
     const FRAME: f64 = 1.0 / 64.0;
@@ -435,6 +455,27 @@ mod tests {
     }
 
     #[test]
+    fn the_game_acts_once_before_each_physics_step() {
+        let (mut engine, mut backend) = engine(sliding_ball());
+        engine.frame(&mut backend, 2.0 * FRAME); // two steps
+        assert_eq!(engine.game().steps_seen, 2);
+        engine.frame(&mut backend, 0.5 * FRAME); // no step this frame
+        assert_eq!(engine.game().steps_seen, 2);
+    }
+
+    #[test]
+    fn the_game_pushes_bodies_through_forces() {
+        // 64 N north on the 1 kg ball for one 1/64 s step: +1 m/s, on top
+        // of its 64 m/s slide.
+        let mut game = sliding_ball();
+        game.push = DVec3::new(64.0, 0.0, 0.0);
+        let (mut engine, mut backend) = engine(game);
+        engine.frame(&mut backend, FRAME);
+        let velocity = engine.simulation().world().bodies[1].motion.velocity;
+        assert_eq!(velocity.x, 65.0);
+    }
+
+    #[test]
     fn the_picture_is_drawn_from_the_view_the_game_chooses() {
         let game = TestGame::new(vec![(1.0, 0.0), (50.0, 0.0)], 2);
         let (mut engine, mut backend) = engine(game);
@@ -472,7 +513,7 @@ mod tests {
             }
             fn scene(&self) -> Scene {
                 let mut scene = sliding_ball().scene();
-                scene.objects[0].body.body_type = physics::BodyType::Dynamic;
+                scene.objects[0].body.body_type = physics::BodyType::Dynamic { mass: 1.0 };
                 scene
             }
             fn input(&mut self, _event: InputEvent) -> Option<Command> {

@@ -36,6 +36,7 @@ pub enum MouseButton {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RawInput {
     KeyPressed(Key),
+    KeyReleased(Key),
     /// Mouse wheel or trackpad scroll, in pixels (a wheel notch counts as
     /// 10); positive is up.
     Scroll(f64),
@@ -48,10 +49,13 @@ pub enum RawInput {
     CursorMoved(DVec2),
 }
 
-/// Something the player did, as games see it.
+/// Something the player did, as games see it. A key held down is pressed
+/// once, then released once: what's held in between is for the game to
+/// remember (as Bevy's `ButtonInput` or Godot's `is_action_pressed` do).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum InputEvent {
     KeyPressed(Key),
+    KeyReleased(Key),
     /// Mouse wheel or trackpad scroll, in pixels (a wheel notch counts as
     /// 10); positive is up.
     Scroll(f64),
@@ -65,9 +69,8 @@ pub enum InputEvent {
 }
 
 /// What a game can ask the engine to do: the engine's own services.
-/// Everything else input does (moving the camera, later flying) is the
-/// game's business, in `Game::input`.
-// TODO(step-06): keys *held* down, not just pressed, for flight controls.
+/// Everything else input does (moving the camera, pushing things, later
+/// flying) is the game's business, in `Game::input`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Command {
     Quit,
@@ -97,6 +100,7 @@ impl Mouse {
     pub(crate) fn translate(&mut self, raw: RawInput, scale: f64) -> Option<InputEvent> {
         match raw {
             RawInput::KeyPressed(key) => Some(InputEvent::KeyPressed(key)),
+            RawInput::KeyReleased(key) => Some(InputEvent::KeyReleased(key)),
             RawInput::Scroll(amount) => Some(InputEvent::Scroll(amount)),
             RawInput::MouseButton { button, pressed } => {
                 if pressed && self.dragging.is_none() {
@@ -144,6 +148,10 @@ mod tests {
         assert_eq!(
             mouse.translate(RawInput::KeyPressed(Key::C), 1.0),
             Some(InputEvent::KeyPressed(Key::C))
+        );
+        assert_eq!(
+            mouse.translate(RawInput::KeyReleased(Key::C), 1.0),
+            Some(InputEvent::KeyReleased(Key::C))
         );
         assert_eq!(
             mouse.translate(RawInput::Scroll(-10.0), 1.0),

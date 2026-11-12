@@ -211,6 +211,7 @@ fn kiss3d_color(c: Color) -> Kiss3dColor {
 fn raw_input(event: WindowEvent) -> Option<RawInput> {
     match event {
         WindowEvent::Key(key, Action::Press, _) => engine_key(key).map(RawInput::KeyPressed),
+        WindowEvent::Key(key, Action::Release, _) => engine_key(key).map(RawInput::KeyReleased),
         WindowEvent::Scroll(_, scroll, _) => Some(RawInput::Scroll(scroll)),
         WindowEvent::MouseButton(button, action, _) => Some(RawInput::MouseButton {
             button: engine_button(button)?,

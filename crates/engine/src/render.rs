@@ -429,7 +429,7 @@ mod tests {
     fn ball_at(north: f64, east: f64) -> SceneObject {
         SceneObject {
             body: Body {
-                body_type: BodyType::Dynamic,
+                body_type: BodyType::Dynamic { mass: 1.0 },
                 motion: Motion {
                     position: DVec3::new(north, east, -0.4),
                     velocity: DVec3::ZERO,

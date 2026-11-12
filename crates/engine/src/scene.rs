@@ -85,7 +85,7 @@ mod tests {
             Shape::Plane(PlaneSize::Endless),
         );
         let ball = object(
-            BodyType::Dynamic,
+            BodyType::Dynamic { mass: 1.0 },
             Collider::Sphere { radius: 1.0 },
             Shape::Sphere { radius: 1.0 },
         );
@@ -103,7 +103,7 @@ mod tests {
     #[test]
     fn a_scene_with_an_impossible_body_has_no_world() {
         let falling_ground = object(
-            BodyType::Dynamic,
+            BodyType::Dynamic { mass: 1.0 },
             Collider::HalfSpace,
             Shape::Plane(PlaneSize::Endless),
         );
