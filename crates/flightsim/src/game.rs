@@ -7,22 +7,28 @@ use std::fmt::{self, Write};
 use engine::{Body, Collider, Command, Game, InputEvent, Key, MouseButton, Scene, View, WorldView};
 
 use crate::camera::Camera;
-use crate::scenarios::{self, Scenario};
+use crate::scenarios;
 
+/// The game's own state: what it follows and its camera. Not the scene:
+/// that's built when the engine loads it, and the engine keeps what it
+/// needs (as engines load a level from its asset, the game doesn't hold a
+/// copy).
 pub(crate) struct FlightSim {
-    scenario: Scenario,
-    /// Follows the scenario's focus; the player turns, zooms and switches
-    /// it.
+    /// Index of the object (and body) the camera follows.
+    focus: usize,
+    /// Follows the focus; the player turns, zooms and switches it.
     camera: Camera,
 }
 
 impl FlightSim {
     pub(crate) fn new() -> Self {
+        // Built once here only to know what to follow and where it starts;
+        // dropped at the end.
         let scenario = scenarios::ball_throws();
         let start = scenario.scene.objects[scenario.focus].body.motion.position;
         Self {
+            focus: scenario.focus,
             camera: Camera::new(start),
-            scenario,
         }
     }
 }
@@ -32,8 +38,10 @@ impl Game for FlightSim {
         1.0 / 120.0
     }
 
+    /// Built on demand and handed over: the engine calls it once, at load.
+    // TODO(step-09): loaded from the scenario's file instead.
     fn scene(&self) -> Scene {
-        self.scenario.scene.clone()
+        scenarios::ball_throws().scene
     }
 
     // TODO(step-06): flight controls (throttle, pitch).
@@ -68,7 +76,7 @@ impl Game for FlightSim {
         // The camera glides towards where the focused object is drawn
         // (interpolated), in real frame time; a chase camera also swings
         // round according to its velocity.
-        let focus = self.scenario.focus;
+        let focus = self.focus;
         let velocity = world.bodies[focus].motion.velocity;
         self.camera.update(world.drawn[focus], velocity, frame_time);
         View {
@@ -80,7 +88,7 @@ impl Game for FlightSim {
     fn write_hud(&self, world: WorldView<'_>, out: &mut String) -> fmt::Result {
         // The physics is NED (z down); the HUD speaks like a pilot: altitude
         // and climb rate are positive upwards.
-        let body = &world.bodies[self.scenario.focus];
+        let body = &world.bodies[self.focus];
         let (position, velocity) = (body.motion.position, body.motion.velocity);
         write!(
             out,

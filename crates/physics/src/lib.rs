@@ -196,6 +196,9 @@ impl World {
             for j in 0..self.bodies.len() {
                 // A copy (a few dozen bytes on the stack), so `bodies[i]`
                 // can be borrowed mutably next.
+                // TODO(step-11): with components in separate arrays (ECS),
+                // read only what's needed (the other body's position and
+                // collider) instead of copying the whole body.
                 let other = self.bodies[j];
                 let body = &mut self.bodies[i];
                 if body.body_type != BodyType::Dynamic || other.body_type != BodyType::Static {
