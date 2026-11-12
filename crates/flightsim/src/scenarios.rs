@@ -19,22 +19,18 @@ const GRID_CELLS: u32 = 5;
 /// The scene's textures, by index (`TextureId`).
 const GRID_TEXTURE: TextureId = TextureId(0);
 
-/// A scene to play, and which of its objects the camera follows.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Scenario {
-    pub(crate) scene: Scene,
-    /// Index of the followed object in `scene.objects` (and so of its body
-    /// in the world).
-    pub(crate) focus: usize,
-}
+/// The object of `ball_throws` the camera follows: its index in the
+/// scene's objects (and so of its body in the world): the orange ball.
+// TODO(step-11): a reference to an entity instead of an index.
+pub(crate) const BALL_THROWS_FOCUS: usize = 2;
 
 /// Three balls resting on flat ground at sea level, thrown at once in different
 /// directions: a small one north-west, a high one north (followed by the
 /// camera) and a big flat one north-east. They pass through each other:
 /// collisions between objects come in step 12.
 // TODO(step-09): scenarios become data files, like the aircraft.
-pub(crate) fn ball_throws() -> Scenario {
-    let scene = Scene {
+pub(crate) fn ball_throws() -> Scene {
+    Scene {
         objects: vec![
             ground(),
             ball(
@@ -68,10 +64,6 @@ pub(crate) fn ball_throws() -> Scenario {
         // Linear light: tiny values for a dark night blue.
         background: Color::rgb(0.006, 0.008, 0.015),
         gravity: STANDARD_GRAVITY,
-    };
-    Scenario {
-        scene,
-        focus: 2, // the orange ball
     }
 }
 
@@ -129,7 +121,6 @@ mod tests {
     /// The scenario's objects with a body of type `body_type`.
     fn objects(body_type: BodyType) -> Vec<SceneObject> {
         ball_throws()
-            .scene
             .objects
             .into_iter()
             .filter(|object| object.body.body_type == body_type)
@@ -188,7 +179,7 @@ mod tests {
 
     #[test]
     fn the_ground_texture_exists_and_repeats_every_major_cell() {
-        let scene = ball_throws().scene;
+        let scene = ball_throws();
         let ground = objects(BodyType::Static)[0];
         let tiled = ground.visual.material.texture.expect("a textured ground");
         assert!(tiled.texture.0 < scene.textures.len());
@@ -198,7 +189,7 @@ mod tests {
 
     #[test]
     fn the_camera_follows_a_ball() {
-        let Scenario { scene, focus } = ball_throws();
-        assert_eq!(scene.objects[focus].body.body_type, BodyType::Dynamic);
+        let followed = ball_throws().objects[BALL_THROWS_FOCUS];
+        assert_eq!(followed.body.body_type, BodyType::Dynamic);
     }
 }

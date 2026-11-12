@@ -22,11 +22,14 @@ mod tests {
         let mut hud = String::with_capacity(1024);
 
         // 10 minutes at 60 FPS: the focused ball moves, the mouse drags and
-        // scrolls all along, the camera goes through every mode.
+        // scrolls all along, the camera goes through every mode and cuts.
         let count = allocations_in(|| {
             for frame in 0..36_000 {
                 if frame % 600 == 0 {
                     game.input(InputEvent::KeyPressed(Key::C));
+                }
+                if frame % 600 == 300 {
+                    game.scene_loaded(); // as after a restart: a cut
                 }
                 game.input(InputEvent::MouseDragged {
                     button: MouseButton::Left,

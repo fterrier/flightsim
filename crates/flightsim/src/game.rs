@@ -22,13 +22,10 @@ pub(crate) struct FlightSim {
 
 impl FlightSim {
     pub(crate) fn new() -> Self {
-        // Built once here only to know what to follow and where it starts;
-        // dropped at the end.
-        let scenario = scenarios::ball_throws();
-        let start = scenario.scene.objects[scenario.focus].body.motion.position;
         Self {
-            focus: scenario.focus,
-            camera: Camera::new(start),
+            focus: scenarios::BALL_THROWS_FOCUS,
+            // Jumps to the focus on its first update, wherever it is.
+            camera: Camera::new(),
         }
     }
 }
@@ -41,7 +38,13 @@ impl Game for FlightSim {
     /// Built on demand and handed over: the engine calls it once, at load.
     // TODO(step-09): loaded from the scenario's file instead.
     fn scene(&self) -> Scene {
-        scenarios::ball_throws().scene
+        scenarios::ball_throws()
+    }
+
+    /// Everything may have jumped (a restart puts the balls back): cut to
+    /// the focus instead of gliding there.
+    fn scene_loaded(&mut self) {
+        self.camera.cut();
     }
 
     // TODO(step-06): flight controls (throttle, pitch).
@@ -165,7 +168,7 @@ mod tests {
     #[test]
     fn plays_the_ball_throws_scenario_at_120_hz() {
         let game = FlightSim::new();
-        assert_eq!(game.scene(), scenarios::ball_throws().scene);
+        assert_eq!(game.scene(), scenarios::ball_throws());
         assert_eq!(game.physics_dt(), 1.0 / 120.0);
     }
 
@@ -191,8 +194,24 @@ mod tests {
     #[test]
     fn the_camera_looks_at_the_focused_ball() {
         let mut game = FlightSim::new();
-        let orange = scenarios::ball_throws().scene.objects[2].body;
+        let orange = scenarios::ball_throws().objects[2].body;
         assert_eq!(look(&mut game, 0.0).target, orange.motion.position);
+    }
+
+    #[test]
+    fn after_a_scene_load_the_camera_cuts_to_the_focus_in_the_same_mode() {
+        let mut game = FlightSim::new();
+        let mut world = StartWorld::new(&game);
+        game.view(world.view(), 1.0 / 60.0); // on the orange ball
+        game.input(InputEvent::KeyPressed(Key::C)); // the player's choice
+
+        // The ball is suddenly 1 km away (as after a restart, back at its
+        // start): no glide across the map, a cut.
+        world.drawn[scenarios::BALL_THROWS_FOCUS] += DVec3::new(1000.0, 0.0, 0.0);
+        game.scene_loaded();
+        let view = game.view(world.view(), 1.0 / 60.0);
+        assert_eq!(view.target, world.drawn[scenarios::BALL_THROWS_FOCUS]);
+        assert!(hud(&game).contains("camera: chase"));
     }
 
     #[test]

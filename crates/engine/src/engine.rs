@@ -34,6 +34,14 @@ pub trait Game {
     /// The scene to load at start; `Command::Restart` goes back to it.
     fn scene(&self) -> Scene;
 
+    /// Called once the scene is loaded, and again after each restart,
+    /// before the next view: everything may have jumped, so a game camera
+    /// should cut rather than glide. The game outlives its scene (like
+    /// Unity's `DontDestroyOnLoad` objects, which hear of a new scene
+    /// through `SceneManager.sceneLoaded`). Optional: does nothing unless
+    /// a game needs it.
+    fn scene_loaded(&mut self) {}
+
     /// Reacts to one input event. The bindings and the game's own controls
     /// (its camera; later, its aircraft) are the game's, like Godot's
     /// InputMap and scripts or Unreal's input mappings and
@@ -121,6 +129,7 @@ impl<G: Game> Engine<G> {
             .unwrap_or_else(|error| panic!("invalid scene: {error}"));
         let sim = Simulation::new(start.clone(), game.physics_dt());
         let renderer = Renderer::new(backend, &scene);
+        game.scene_loaded();
         let view = game.view(sim.view(), 0.0);
         let mut engine = Self {
             game,
@@ -184,6 +193,7 @@ impl<G: Game> Engine<G> {
             Command::Restart => {
                 self.sim = Simulation::new(self.start.clone(), self.game.physics_dt());
                 self.stats.restart_clock();
+                self.game.scene_loaded();
             }
             Command::ToggleSlowFrames => self.lag = self.lag.toggled(DebugLag::Slow),
             Command::ToggleStalledFrames => self.lag = self.lag.toggled(DebugLag::Stalled),
@@ -250,6 +260,10 @@ pub(crate) mod testing {
         pub last_event: Option<InputEvent>,
         /// The latest frame time the game's view was asked for.
         pub last_frame_time: Option<f64>,
+        /// How many times the game heard its scene was (re)loaded, as of
+        /// its latest view.
+        pub scenes_loaded: u32,
+        loads: u32,
     }
 
     impl TestGame {
@@ -259,6 +273,8 @@ pub(crate) mod testing {
                 focus,
                 last_event: None,
                 last_frame_time: None,
+                scenes_loaded: 0,
+                loads: 0,
             }
         }
     }
@@ -312,6 +328,10 @@ pub(crate) mod testing {
             }
         }
 
+        fn scene_loaded(&mut self) {
+            self.loads += 1;
+        }
+
         fn input(&mut self, event: InputEvent) -> Option<Command> {
             self.last_event = Some(event);
             match event {
@@ -325,6 +345,7 @@ pub(crate) mod testing {
 
         fn view(&mut self, world: WorldView<'_>, frame_time: f64) -> View {
             self.last_frame_time = Some(frame_time);
+            self.scenes_loaded = self.loads;
             let target = world.drawn[self.focus];
             View {
                 eye: target + CAMERA_OFFSET,
@@ -391,6 +412,17 @@ mod tests {
         assert!(backend.camera.is_some());
         assert!(!backend.texts.is_empty());
         assert_eq!(engine.game().last_frame_time, Some(0.0));
+    }
+
+    #[test]
+    fn the_game_hears_of_each_scene_load_before_its_next_view() {
+        // At load, then after a restart: in time for the game to cut its
+        // camera before the next picture.
+        let (mut engine, mut backend) = engine(sliding_ball());
+        assert_eq!(engine.game().scenes_loaded, 1);
+        press(&mut engine, Key::R);
+        engine.frame(&mut backend, FRAME);
+        assert_eq!(engine.game().scenes_loaded, 2);
     }
 
     #[test]
