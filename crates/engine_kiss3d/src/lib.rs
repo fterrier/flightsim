@@ -15,9 +15,9 @@ use std::thread;
 use std::time::Instant;
 
 use engine::platform::{
-    Engine, Flow, Mesh, ProxyId, RawInput, RenderBackend, Screen, Texture, VIEW_DISTANCE,
+    Engine, Flow, GpuTexture, Mesh, ProxyId, RawInput, RenderBackend, Screen, VIEW_DISTANCE,
 };
-use engine::{Color, DVec2, Game, Key, MouseButton};
+use engine::{Color, DVec2, Game, Key, MouseButton, Texture};
 use glam::{Vec2, Vec3};
 use kiss3d::camera::OrbitCamera3d;
 use kiss3d::color::Color as Kiss3dColor;
@@ -80,6 +80,8 @@ struct Kiss3dBackend {
     camera: OrbitCamera3d,
     /// Render proxies, indexed by `ProxyId`.
     proxies: Vec<SceneNode3d>,
+    /// Uploaded textures, indexed by `GpuTexture`.
+    textures: Vec<Arc<Kiss3dTexture>>,
     font: Arc<Font>,
 }
 
@@ -108,6 +110,7 @@ impl Kiss3dBackend {
             scene: SceneNode3d::empty(),
             camera,
             proxies: Vec::new(),
+            textures: Vec::new(),
             font: Font::default(),
         }
     }
@@ -143,18 +146,28 @@ impl RenderBackend for Kiss3dBackend {
         self.camera.look_at(kiss3d_vec3(eye), kiss3d_vec3(target));
     }
 
-    fn create_sphere(&mut self, radius: f32, color: Color) -> ProxyId {
-        let mut node = self.scene.add_sphere(radius);
-        node.set_color(kiss3d_color(color));
-        self.proxies.push(node);
-        ProxyId(self.proxies.len() - 1)
-    }
-
     fn set_position(&mut self, proxy: ProxyId, position: Vec3) {
         self.proxies[proxy.0].set_position(kiss3d_vec3(position));
     }
 
-    fn create_mesh(&mut self, mesh: &Mesh, texture: &Texture) -> ProxyId {
+    fn create_texture(&mut self, texture: &Texture) -> GpuTexture {
+        // Repeated, smoothly filtered, with mipmaps and 16x anisotropic
+        // filtering: sharp up close, no shimmer far away or at grazing
+        // angles.
+        self.textures.push(Kiss3dTexture::new(
+            texture.width,
+            texture.height,
+            &texture.srgba,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            wgpu::AddressMode::Repeat,
+            wgpu::FilterMode::Linear,
+            true,
+            16,
+        ));
+        GpuTexture(self.textures.len() - 1)
+    }
+
+    fn create_mesh(&mut self, mesh: &Mesh, color: Color, texture: Option<GpuTexture>) -> ProxyId {
         let gpu_mesh = GpuMesh3d::new(
             mesh.positions.iter().copied().map(kiss3d_vec3).collect(),
             mesh.triangles.clone(),
@@ -165,19 +178,10 @@ impl RenderBackend for Kiss3dBackend {
         let mut node = self
             .scene
             .add_mesh(Rc::new(RefCell::new(gpu_mesh)), Kiss3dVec3::ONE);
-        // Repeated, smoothly filtered, with mipmaps and 16x anisotropic
-        // filtering: sharp up close, no shimmer far away or at grazing
-        // angles.
-        node.set_texture(Kiss3dTexture::new(
-            texture.width,
-            texture.height,
-            &texture.srgba,
-            wgpu::TextureFormat::Rgba8UnormSrgb,
-            wgpu::AddressMode::Repeat,
-            wgpu::FilterMode::Linear,
-            true,
-            16,
-        ));
+        node.set_color(kiss3d_color(color));
+        if let Some(texture) = texture {
+            node.set_texture(self.textures[texture.0].clone());
+        }
         self.proxies.push(node);
         ProxyId(self.proxies.len() - 1)
     }

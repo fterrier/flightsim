@@ -21,23 +21,25 @@
 //! real public API (enforced by the `unreachable_pub` lint).
 
 mod engine;
-mod ground;
 mod hud;
 mod input;
+mod mesh;
 #[cfg(test)]
 mod no_alloc;
 mod render;
 mod scene;
 mod simulation;
+mod texture;
 mod timestep;
 
 // For games: what they implement, the content they describe (including the
 // physics types their objects are made of), the input they bind.
 pub use engine::Game;
 pub use input::{Command, InputEvent, Key, MouseButton};
-pub use render::{Color, GroundGrid, Shape, View, Visual};
+pub use render::{Color, Material, PlaneSize, Shape, TextureId, TiledTexture, View, Visual};
 pub use scene::{Scene, SceneObject};
 pub use simulation::WorldView;
+pub use texture::Texture;
 
 // The engine is the games' single dependency: the physics crate is an
 // engine detail, its content types are re-exported here (the `bevy` crate
@@ -57,5 +59,5 @@ pub use physics::{Body, BodyType, Collider, DVec2, DVec3, Motion, STANDARD_GRAVI
 pub mod platform {
     pub use crate::engine::{Engine, Flow};
     pub use crate::input::RawInput;
-    pub use crate::render::{Mesh, ProxyId, RenderBackend, Screen, Texture, VIEW_DISTANCE};
+    pub use crate::render::{GpuTexture, Mesh, ProxyId, RenderBackend, Screen, VIEW_DISTANCE};
 }

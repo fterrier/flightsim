@@ -4,26 +4,26 @@
 //!
 //! The layering follows established engines (Godot's `RenderingServer`,
 //! Unreal's RHI and scene proxies, Bevy's render world):
-//! - **`RenderBackend`**: a handful of generic operations. Create a render
-//!   proxy (a sphere, or a textured mesh), move it, set the camera, draw
-//!   text. It knows geometry, not scene objects: each object's [`Visual`]
-//!   becomes one proxy. It grows only with new kinds of geometry, never
-//!   with content: a plane or a building will be a mesh (data), not a new
+//! - **`RenderBackend`**: a handful of generic operations. Upload a
+//!   texture, create a render proxy from a mesh, move it, set the camera,
+//!   draw text. It knows meshes and textures, not scene objects. It never
+//!   grows with content: a plane or a building is a mesh (data), not a new
 //!   function.
 //! - **`Kiss3dBackend`** (crate `engine_kiss3d`) implements it with one
 //!   kiss3d call per method: a "humble object", too simple to hide bugs,
 //!   and the only rendering code tests can't run.
 //! - **`Renderer`** (here) makes the world's drawing *decisions*: what
-//!   each visual becomes, which proxy goes where, f64 -> f32, what the
-//!   camera sends. Tests run it against a fake backend that records calls
-//!   (the idea behind Unreal's "null RHI").
+//!   mesh each visual becomes, which proxy goes where, f64 -> f32, what
+//!   the camera sends. Tests run it against a fake backend that records
+//!   calls (the idea behind Unreal's "null RHI").
 
 use glam::{Vec2, Vec3};
 use physics::DVec3;
 
-use crate::ground::{grid_texture, ground_mesh};
+use crate::mesh;
 use crate::scene::Scene;
 use crate::simulation::WorldView;
+use crate::texture::Texture;
 
 /// A colour, in *linear* light (how much light, not how bright it looks).
 /// Backends convert to sRGB, what screens expect, which brightens dark
@@ -45,59 +45,66 @@ impl Color {
 
 pub(crate) const WHITE: Color = Color::rgb(1.0, 1.0, 1.0);
 
-/// The geometry of a [`Visual`], in metres.
-// TODO(later): `Mesh(asset)` for our own 3D models (glTF from Blender),
-// drawn with `RenderBackend::create_mesh` like the ground.
+/// The geometry of a [`Visual`], in metres: the mesh primitives the
+/// engine builds (like Godot's `SphereMesh` and `PlaneMesh`).
+// TODO(later): `Mesh(asset)` for our own 3D models (glTF from Blender).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Shape {
-    Sphere {
-        radius: f32,
-    },
-    /// An endless flat ground through its object's position, covered with
-    /// a grid: the look of a `HalfSpace` collider, endless too.
-    GroundPlane(GroundGrid),
+    /// Centred on its object's position.
+    Sphere { radius: f32 },
+    /// Horizontal, through its object's position.
+    Plane(PlaneSize),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PlaneSize {
+    /// A square, `half_size` metres from its centre to each side.
+    Square { half_size: f32 },
+    /// Endless, like a `HalfSpace` collider: drawn as far as the camera
+    /// sees, wherever the camera is.
+    Endless,
+}
+
+/// What a surface looks like (Godot's `StandardMaterial3D`, Bevy's
+/// `StandardMaterial`, a Unity material).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Material {
+    /// The surface's colour; with a texture, it tints it (white shows the
+    /// texture as it is).
+    pub color: Color,
+    pub texture: Option<TiledTexture>,
+}
+
+impl Material {
+    /// A plain colour, no texture.
+    pub const fn plain(color: Color) -> Self {
+        Self {
+            color,
+            texture: None,
+        }
+    }
+}
+
+/// A texture covering a surface, repeated every `tile_size` metres (like
+/// a material's "tiling" or UV scale in engines).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TiledTexture {
+    pub texture: TextureId,
+    pub tile_size: f64,
+}
+
+/// A texture of a scene: its index in `Scene::textures`. Several objects
+/// can share one texture, uploaded once (like a Bevy `Handle<Image>`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextureId(pub usize);
+
 /// What an object looks like: data, not code. Engines call this a mesh +
-/// material (Unity's MeshRenderer, Godot's MeshInstance, Bevy's `Mesh` +
-/// `Material` components). The physics never sees it.
+/// material (Unity's MeshRenderer, Godot's MeshInstance, Bevy's `Mesh3d`
+/// + `MeshMaterial3d` components). The physics never sees it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Visual {
     pub shape: Shape,
-    /// The object's colour (for a ground plane: between the grid lines).
-    pub color: Color,
-}
-
-/// How a ground plane looks: a line every `spacing` metres, a brighter one
-/// every `major_every` lines.
-// TODO(later): textured terrain, from real elevation data.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct GroundGrid {
-    /// Metres between lines.
-    pub spacing: f64,
-    pub major_every: u32,
-    pub minor_color: Color,
-    pub major_color: Color,
-}
-
-impl GroundGrid {
-    /// Metres covered by one major cell: the grid repeats with this
-    /// period.
-    pub(crate) fn major_spacing(&self) -> f64 {
-        self.spacing * f64::from(self.major_every)
-    }
-}
-
-impl Default for GroundGrid {
-    /// A line every 2 m, a major one every 10 m.
-    fn default() -> Self {
-        Self {
-            spacing: 2.0,
-            major_every: 5,
-            minor_color: Color::rgb(0.08, 0.08, 0.08),
-            major_color: Color::rgb(0.5, 0.5, 0.5),
-        }
-    }
+    pub material: Material,
 }
 
 /// Where the camera is and what it looks at, in world space (NED, metres):
@@ -118,6 +125,10 @@ pub const VIEW_DISTANCE: f32 = 5000.0;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ProxyId(pub usize);
 
+/// A texture uploaded to the backend (like Godot's texture `RID`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GpuTexture(pub usize);
+
 /// A triangle mesh, in render axes (f32 metres, x east, y up, z south),
 /// around its proxy's position: what GPUs draw.
 #[derive(Clone, Debug, PartialEq)]
@@ -131,16 +142,6 @@ pub struct Mesh {
     pub uvs: Vec<Vec2>,
     /// Indices into `positions`, counter-clockwise seen from the front.
     pub triangles: Vec<[u32; 3]>,
-}
-
-/// An image to cover a mesh with: `width` × `height` pixels, row by row
-/// from the top-left, 4 bytes each (red, green, blue: sRGB-encoded, as
-/// colour textures are stored; then alpha).
-#[derive(Clone, Debug, PartialEq)]
-pub struct Texture {
-    pub width: u32,
-    pub height: u32,
-    pub srgba: Vec<u8>,
 }
 
 /// The output surface, in *physical* pixels. `scale` is the HiDPI factor:
@@ -164,12 +165,12 @@ pub trait RenderBackend {
     /// The camera: at `eye`, looking at `target`.
     fn set_camera(&mut self, eye: Vec3, target: Vec3);
 
-    /// Retained objects: created once, then moved every frame. A sphere of
-    /// `radius` metres...
-    fn create_sphere(&mut self, radius: f32, color: Color) -> ProxyId;
-    /// ...or any mesh, covered with `texture` (repeated, and filtered so it
-    /// doesn't shimmer far away).
-    fn create_mesh(&mut self, mesh: &Mesh, texture: &Texture) -> ProxyId;
+    /// Uploads a texture, once, for meshes to use. Repeated beyond its
+    /// edges, and filtered so it doesn't shimmer far away.
+    fn create_texture(&mut self, texture: &Texture) -> GpuTexture;
+    /// Retained objects: created once, then moved every frame. A mesh in
+    /// `color`, covered with `texture` if any.
+    fn create_mesh(&mut self, mesh: &Mesh, color: Color, texture: Option<GpuTexture>) -> ProxyId;
     fn set_position(&mut self, proxy: ProxyId, position: Vec3);
 
     /// Immediate drawing, re-issued every frame: text in **screen** space
@@ -205,24 +206,47 @@ pub(crate) struct Renderer {
 }
 
 impl Renderer {
-    /// Creates the scene's render proxies, its background and its light.
+    /// Uploads the scene's textures, creates its render proxies, its
+    /// background and its light.
     pub(crate) fn new(backend: &mut impl RenderBackend, scene: &Scene) -> Self {
         backend.set_background(scene.background);
         backend.set_sun(to_render(SUN_DIRECTION.normalize()));
+        let textures: Vec<GpuTexture> = scene
+            .textures
+            .iter()
+            .map(|texture| backend.create_texture(texture))
+            .collect();
         let proxies = scene
             .objects
             .iter()
-            .map(|object| match object.visual.shape {
-                Shape::Sphere { radius } => (
-                    backend.create_sphere(radius, object.visual.color),
-                    Placement::AtBody,
-                ),
-                Shape::GroundPlane(grid) => {
-                    let texture = grid_texture(&grid, object.visual.color);
-                    let proxy = backend.create_mesh(&ground_mesh(&grid), &texture);
-                    let tile = grid.major_spacing();
-                    (proxy, Placement::UnderCamera { tile })
-                }
+            .enumerate()
+            .map(|(index, object)| {
+                let Visual { shape, material } = object.visual;
+                let texture = material.texture.map(|tiled| {
+                    // TODO(step-09): scene validation reports this as an
+                    // error.
+                    let gpu = textures.get(tiled.texture.0).copied();
+                    gpu.unwrap_or_else(|| panic!("object {index}: no texture {}", tiled.texture.0))
+                });
+                // Without a texture, texture coordinates are unused: any
+                // tile size will do.
+                let tile = material.texture.map_or(1.0, |tiled| tiled.tile_size);
+                let (mesh, placement) = match shape {
+                    Shape::Sphere { radius } => {
+                        (mesh::sphere(radius, tile as f32), Placement::AtBody)
+                    }
+                    Shape::Plane(PlaneSize::Square { half_size }) => {
+                        (mesh::plane(half_size, tile as f32), Placement::AtBody)
+                    }
+                    Shape::Plane(PlaneSize::Endless) => (
+                        mesh::plane(VIEW_DISTANCE, tile as f32),
+                        Placement::UnderCamera { tile },
+                    ),
+                };
+                (
+                    backend.create_mesh(&mesh, material.color, texture),
+                    placement,
+                )
             })
             .collect();
         Self { proxies }
@@ -274,11 +298,12 @@ fn to_render(ned: DVec3) -> Vec3 {
 pub(crate) mod fakes {
     use super::*;
 
-    /// A proxy, as the backend was asked to create it.
+    /// A mesh proxy, as the backend was asked to create it.
     #[derive(Debug, PartialEq)]
-    pub(crate) enum Created {
-        Sphere { radius: f32, color: Color },
-        Mesh { mesh: Mesh, texture: Texture },
+    pub(crate) struct Created {
+        pub(crate) mesh: Mesh,
+        pub(crate) color: Color,
+        pub(crate) texture: Option<GpuTexture>,
     }
 
     /// Records every call, so tests can check what was drawn.
@@ -288,6 +313,8 @@ pub(crate) mod fakes {
         pub(crate) sun: Option<Vec3>,
         /// Latest camera: eye and target.
         pub(crate) camera: Option<(Vec3, Vec3)>,
+        /// Uploaded textures.
+        pub(crate) textures: Vec<Texture>,
         /// Created proxies, and their latest position.
         pub(crate) proxies: Vec<(Created, Option<Vec3>)>,
         /// Text, position, size.
@@ -301,14 +328,10 @@ pub(crate) mod fakes {
                 background: None,
                 sun: None,
                 camera: None,
+                textures: Vec::new(),
                 proxies: Vec::new(),
                 texts: Vec::new(),
             }
-        }
-
-        fn create(&mut self, created: Created) -> ProxyId {
-            self.proxies.push((created, None));
-            ProxyId(self.proxies.len() - 1)
         }
     }
 
@@ -325,14 +348,26 @@ pub(crate) mod fakes {
         fn set_camera(&mut self, eye: Vec3, target: Vec3) {
             self.camera = Some((eye, target));
         }
-        fn create_sphere(&mut self, radius: f32, color: Color) -> ProxyId {
-            self.create(Created::Sphere { radius, color })
+        fn create_texture(&mut self, texture: &Texture) -> GpuTexture {
+            self.textures.push(texture.clone());
+            GpuTexture(self.textures.len() - 1)
         }
-        fn create_mesh(&mut self, mesh: &Mesh, texture: &Texture) -> ProxyId {
-            self.create(Created::Mesh {
-                mesh: mesh.clone(),
-                texture: texture.clone(),
-            })
+        fn create_mesh(
+            &mut self,
+            mesh: &Mesh,
+            color: Color,
+            texture: Option<GpuTexture>,
+        ) -> ProxyId {
+            let mesh = mesh.clone();
+            self.proxies.push((
+                Created {
+                    mesh,
+                    color,
+                    texture,
+                },
+                None,
+            ));
+            ProxyId(self.proxies.len() - 1)
         }
         fn set_position(&mut self, proxy: ProxyId, position: Vec3) {
             self.proxies[proxy.0].1 = Some(position);
@@ -353,10 +388,10 @@ pub(crate) mod fakes {
         fn set_background(&mut self, _color: Color) {}
         fn set_sun(&mut self, _direction: Vec3) {}
         fn set_camera(&mut self, _eye: Vec3, _target: Vec3) {}
-        fn create_sphere(&mut self, _radius: f32, _color: Color) -> ProxyId {
-            ProxyId(0)
+        fn create_texture(&mut self, _texture: &Texture) -> GpuTexture {
+            GpuTexture(0)
         }
-        fn create_mesh(&mut self, _mesh: &Mesh, _texture: &Texture) -> ProxyId {
+        fn create_mesh(&mut self, _: &Mesh, _: Color, _: Option<GpuTexture>) -> ProxyId {
             ProxyId(0)
         }
         fn set_position(&mut self, _proxy: ProxyId, _position: Vec3) {}
@@ -374,10 +409,14 @@ mod tests {
 
     const BALL: Visual = Visual {
         shape: Shape::Sphere { radius: 0.4 },
-        color: WHITE,
+        material: Material::plain(WHITE),
     };
     const BACKGROUND: Color = Color::rgb(0.1, 0.2, 0.3);
-    const GROUND_COLOR: Color = Color::rgb(0.02, 0.03, 0.02);
+    /// A 10 m tile of the scene's first texture.
+    const TILED: TiledTexture = TiledTexture {
+        texture: TextureId(0),
+        tile_size: 10.0,
+    };
 
     const SCREEN: Screen = Screen {
         width: 1000.0,
@@ -401,7 +440,8 @@ mod tests {
         }
     }
 
-    /// Flat ground at `elevation` metres, drawn as the default grid.
+    /// Endless flat ground at `elevation` metres, covered with the first
+    /// texture.
     fn ground(elevation: f64) -> SceneObject {
         SceneObject {
             body: Body {
@@ -413,15 +453,24 @@ mod tests {
                 collider: Collider::HalfSpace,
             },
             visual: Visual {
-                shape: Shape::GroundPlane(GroundGrid::default()),
-                color: GROUND_COLOR,
+                shape: Shape::Plane(PlaneSize::Endless),
+                material: Material {
+                    color: WHITE,
+                    texture: Some(TILED),
+                },
             },
         }
+    }
+
+    /// A 1 × 1 texture of `color`.
+    fn texture(color: Color) -> Texture {
+        Texture::from_fn(1, 1, |_, _| color)
     }
 
     fn scene(objects: Vec<SceneObject>) -> Scene {
         Scene {
             objects,
+            textures: vec![texture(WHITE)],
             background: BACKGROUND,
             gravity: STANDARD_GRAVITY,
         }
@@ -466,13 +515,6 @@ mod tests {
         let mut backend = RecordingBackend::new(SCREEN);
         setup(&ball_on_the_ground(), &mut backend);
         assert_eq!(backend.proxies.len(), 2);
-        assert_eq!(
-            backend.proxies[1].0,
-            Created::Sphere {
-                radius: 0.4,
-                color: WHITE
-            }
-        );
         assert_eq!(backend.background, Some(BACKGROUND));
         let sun = backend.sun.expect("a sun is set");
         assert!(sun.y < 0.0, "sunlight goes down: {sun}");
@@ -480,16 +522,67 @@ mod tests {
     }
 
     #[test]
-    fn a_ground_plane_becomes_its_grid_mesh_and_texture() {
+    fn a_sphere_becomes_a_sphere_mesh_in_its_colour() {
         let mut backend = RecordingBackend::new(SCREEN);
         setup(&ball_on_the_ground(), &mut backend);
-        let grid = GroundGrid::default();
+        let sphere = Created {
+            mesh: mesh::sphere(0.4, 1.0),
+            color: WHITE,
+            texture: None,
+        };
+        assert_eq!(backend.proxies[1].0, sphere);
+    }
+
+    #[test]
+    fn a_textured_endless_plane_reaches_the_view_distance_tiled_by_its_texture() {
+        let mut backend = RecordingBackend::new(SCREEN);
+        setup(&ball_on_the_ground(), &mut backend);
+        let created = &backend.proxies[0].0;
+        assert_eq!(created.mesh, mesh::plane(VIEW_DISTANCE, 10.0));
+        assert_eq!(created.texture, Some(GpuTexture(0)));
+    }
+
+    #[test]
+    fn a_square_plane_has_its_own_size() {
+        let mut square = ground(0.0);
+        square.visual.shape = Shape::Plane(PlaneSize::Square { half_size: 25.0 });
+        let mut backend = RecordingBackend::new(SCREEN);
+        let (sim, renderer) = setup(&scene(vec![square]), &mut backend);
+        assert_eq!(backend.proxies[0].0.mesh, mesh::plane(25.0, 10.0));
+        // A square stays where its body is, wherever the camera goes.
+        renderer.draw(
+            &mut backend,
+            sim.view(),
+            from(DVec3::new(123.0, 45.0, -6.0)),
+        );
+        assert_eq!(backend.proxies[0].1, Some(Vec3::ZERO));
+    }
+
+    #[test]
+    fn each_texture_is_uploaded_once_however_many_objects_use_it() {
+        let mut scene = scene(vec![ground(0.0), ground(5.0)]);
+        scene.textures.push(texture(BACKGROUND));
+        let mut backend = RecordingBackend::new(SCREEN);
+        setup(&scene, &mut backend);
+        assert_eq!(backend.textures, scene.textures);
+        let used = |i: usize| backend.proxies[i].0.texture;
         assert_eq!(
-            backend.proxies[0].0,
-            Created::Mesh {
-                mesh: ground_mesh(&grid),
-                texture: grid_texture(&grid, GROUND_COLOR),
-            }
+            (used(0), used(1)),
+            (Some(GpuTexture(0)), Some(GpuTexture(0)))
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "object 1: no texture 3")]
+    fn a_missing_texture_is_refused() {
+        let mut broken = ground(0.0);
+        broken.visual.material.texture = Some(TiledTexture {
+            texture: TextureId(3),
+            ..TILED
+        });
+        setup(
+            &scene(vec![ground(0.0), broken]),
+            &mut RecordingBackend::new(SCREEN),
         );
     }
 
@@ -505,7 +598,7 @@ mod tests {
         assert_eq!(backend.proxies[2].1, Some(Vec3::new(4.0, 0.4, 3.0)));
     }
 
-    /// Where the ground plane of a scene with a ground `elevation` metres
+    /// Where the endless ground of a scene with a ground `elevation` metres
     /// up is drawn, seen from `eye`.
     fn ground_drawn_at(elevation: f64, eye: DVec3) -> Vec3 {
         let mut backend = RecordingBackend::new(SCREEN);
@@ -515,13 +608,13 @@ mod tests {
     }
 
     #[test]
-    fn the_endless_ground_is_drawn_under_the_camera_at_its_altitude() {
+    fn an_endless_plane_is_drawn_under_the_camera_at_its_altitude() {
         // A plateau 7 m up, seen from 30 m above it, far from the origin.
         let eye = DVec3::new(1003.0, -497.0, -37.0);
         let drawn = ground_drawn_at(7.0, eye);
         assert_eq!(drawn.y, 7.0); // render y is up
-        // Under the eye, to within a tile (10 m): it covers what's in view
-        // all around.
+        // Under the eye, to within half a tile (10 m): it covers what's in
+        // view all around.
         let under_eye = to_render(eye);
         assert!(
             (drawn.x - under_eye.x).abs() <= 5.0,
@@ -534,10 +627,9 @@ mod tests {
     }
 
     #[test]
-    fn the_ground_moves_in_whole_tiles_so_its_grid_stays_put() {
-        // Wherever the camera is, the ground is moved by whole major cells
-        // (10 m): its texture repeats every tile, so the grid lines land
-        // exactly where they were.
+    fn an_endless_plane_moves_in_whole_tiles_so_its_texture_stays_put() {
+        // Moved by whole tiles (10 m): the texture repeats every tile, so
+        // it lands exactly where it was.
         for eye in [
             DVec3::new(3.0, 4.0, -9.0),
             DVec3::new(-1234.5, 678.9, -20.0),

@@ -3,12 +3,21 @@
 //! z down): altitude is -z, and "up" velocities are negative.
 
 use engine::{
-    Body, BodyType, Collider, Color, DVec3, GroundGrid, Motion, STANDARD_GRAVITY, Scene,
-    SceneObject, Shape, Visual,
+    Body, BodyType, Collider, Color, DVec3, Material, Motion, PlaneSize, STANDARD_GRAVITY, Scene,
+    SceneObject, Shape, TextureId, TiledTexture, Visual,
 };
+
+use crate::textures::{self, GridColors};
 
 /// Flat ground at sea level, where the balls start.
 const GROUND_ELEVATION: f64 = 0.0;
+
+/// The ground grid: a line every 2 m, a brighter one every 5 lines (10 m).
+const GRID_SPACING: f64 = 2.0;
+const GRID_CELLS: u32 = 5;
+
+/// The scene's textures, by index (`TextureId`).
+const GRID_TEXTURE: TextureId = TextureId(0);
 
 /// A scene to play, and which of its objects the camera follows.
 #[derive(Clone, Debug, PartialEq)]
@@ -47,6 +56,15 @@ pub(crate) fn ball_throws() -> Scenario {
                 Color::rgb(1.0, 0.8, 0.1),
             ),
         ],
+        textures: vec![textures::grid_tile(
+            GRID_CELLS,
+            // Linear light: a very dark green-grey, lines in greys.
+            GridColors {
+                ground: Color::rgb(0.01, 0.012, 0.01),
+                minor: Color::rgb(0.08, 0.08, 0.08),
+                major: Color::rgb(0.5, 0.5, 0.5),
+            },
+        )],
         // Linear light: tiny values for a dark night blue.
         background: Color::rgb(0.006, 0.008, 0.015),
         gravity: STANDARD_GRAVITY,
@@ -57,8 +75,8 @@ pub(crate) fn ball_throws() -> Scenario {
     }
 }
 
-/// The ground: an endless static plane at `GROUND_ELEVATION`, drawn dark
-/// with a grid line every 2 m and a brighter one every 10 m.
+/// The ground: an endless static plane at `GROUND_ELEVATION`, drawn
+/// endless too, covered with the grid texture (one tile per major cell).
 fn ground() -> SceneObject {
     SceneObject {
         body: Body {
@@ -70,14 +88,14 @@ fn ground() -> SceneObject {
             collider: Collider::HalfSpace,
         },
         visual: Visual {
-            shape: Shape::GroundPlane(GroundGrid {
-                spacing: 2.0,
-                major_every: 5,
-                minor_color: Color::rgb(0.08, 0.08, 0.08),
-                major_color: Color::rgb(0.5, 0.5, 0.5),
-            }),
-            // Linear light: a very dark green-grey.
-            color: Color::rgb(0.01, 0.012, 0.01),
+            shape: Shape::Plane(PlaneSize::Endless),
+            material: Material {
+                color: Color::rgb(1.0, 1.0, 1.0), // the texture as it is
+                texture: Some(TiledTexture {
+                    texture: GRID_TEXTURE,
+                    tile_size: GRID_SPACING * f64::from(GRID_CELLS),
+                }),
+            },
         },
     }
 }
@@ -99,7 +117,7 @@ fn ball(east: f64, radius: f64, velocity: DVec3, color: Color) -> SceneObject {
             shape: Shape::Sphere {
                 radius: radius as f32,
             },
-            color,
+            material: Material::plain(color),
         },
     }
 }
@@ -163,6 +181,19 @@ mod tests {
             let radius = radius(&ball) as f32;
             assert_eq!(ball.visual.shape, Shape::Sphere { radius });
         }
+        // The ground's collider is endless: so is what's drawn.
+        let ground = objects(BodyType::Static)[0];
+        assert_eq!(ground.visual.shape, Shape::Plane(PlaneSize::Endless));
+    }
+
+    #[test]
+    fn the_ground_texture_exists_and_repeats_every_major_cell() {
+        let scene = ball_throws().scene;
+        let ground = objects(BodyType::Static)[0];
+        let tiled = ground.visual.material.texture.expect("a textured ground");
+        assert!(tiled.texture.0 < scene.textures.len());
+        // 5 cells of 2 m per tile: major lines every 10 m.
+        assert_eq!(tiled.tile_size, 10.0);
     }
 
     #[test]

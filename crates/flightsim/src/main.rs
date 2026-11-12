@@ -8,6 +8,7 @@ mod game;
 #[cfg(test)]
 mod no_alloc;
 mod scenarios;
+mod textures;
 
 fn main() {
     engine_kiss3d::run("flightsim", game::FlightSim::new());

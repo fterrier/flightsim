@@ -62,7 +62,8 @@ crates/
                     timestep.rs     the fixed-timestep clock
                     render.rs       Renderer (one proxy per object) against
                                     the RenderBackend interface
-                    ground.rs       a ground's mesh and grid texture
+                    mesh.rs         mesh primitives: sphere, plane
+                    texture.rs      Texture: images for materials (sRGB)
                     hud.rs          text overlay; FrameStats (FPS, real time)
                     input.rs        raw input -> InputEvent; Command
                     scene.rs        the scene format (objects = body + visual)
@@ -71,6 +72,7 @@ crates/
   flightsim/      GAME    what game it is and how it's played:
                     scenarios.rs    the scenes, and what the camera follows
                     camera.rs       orbit / chase / fixed camera, its controls
+                    textures.rs     the ground grid texture, drawn in code
                     game.rs         FlightSim: the `Game` (input, view, HUD)
                     main.rs         engine_kiss3d::run(FlightSim::new())
   alloc_count/    TESTS   counts heap allocations (test builds only)
@@ -173,7 +175,10 @@ upgrades are deliberate.
 All rendering decisions (where proxies go, f64 → f32, zoom limits, ruler
 and HUD layout, later the NED → y-up conversion) live in `Renderer`,
 written against `RenderBackend`: a few generic operations (create a
-sphere or textured-mesh proxy, move it, set the camera, text). The
+texture, create a mesh proxy in a colour and texture, move it, set the
+camera, text). Visuals are a shape (mesh primitive) and a `Material`
+(colour, optional tiled texture), as in Godot and Bevy; textures are scene
+assets, uploaded once and shared. The
 kiss3d implementation is a "humble object", one kiss3d call per method.
 
 This follows established practice: engines put the graphics API behind

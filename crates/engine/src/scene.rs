@@ -17,6 +17,7 @@
 use physics::{Body, DVec3, World, WorldError};
 
 use crate::render::{Color, Visual};
+use crate::texture::Texture;
 
 /// One object of a scene: everything about it, in one place.
 // TODO(step-11): becomes an ECS "bundle": the group of components an
@@ -35,6 +36,9 @@ pub struct Scene {
     /// Everything that exists in the world: moving objects and static ones
     /// (the ground) alike.
     pub objects: Vec<SceneObject>,
+    /// The images objects' materials use (by `TextureId`: index here),
+    /// each uploaded once however many objects share it.
+    pub textures: Vec<Texture>,
     /// Sky colour, in linear light (see `render::Color`).
     pub background: Color,
     /// The world's gravity, in m/s² (usually `physics::STANDARD_GRAVITY`).
@@ -53,7 +57,7 @@ impl Scene {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render::{GroundGrid, Shape, WHITE};
+    use crate::render::{Material, PlaneSize, Shape, WHITE};
     use physics::{BodyType, Collider, Motion, STANDARD_GRAVITY};
 
     fn object(body_type: BodyType, collider: Collider, shape: Shape) -> SceneObject {
@@ -68,7 +72,7 @@ mod tests {
             },
             visual: Visual {
                 shape,
-                color: WHITE,
+                material: Material::plain(WHITE),
             },
         }
     }
@@ -78,7 +82,7 @@ mod tests {
         let ground = object(
             BodyType::Static,
             Collider::HalfSpace,
-            Shape::GroundPlane(GroundGrid::default()),
+            Shape::Plane(PlaneSize::Endless),
         );
         let ball = object(
             BodyType::Dynamic,
@@ -87,6 +91,7 @@ mod tests {
         );
         let scene = Scene {
             objects: vec![ground, ball],
+            textures: Vec::new(),
             background: WHITE,
             gravity: STANDARD_GRAVITY,
         };
@@ -100,10 +105,11 @@ mod tests {
         let falling_ground = object(
             BodyType::Dynamic,
             Collider::HalfSpace,
-            Shape::GroundPlane(GroundGrid::default()),
+            Shape::Plane(PlaneSize::Endless),
         );
         let scene = Scene {
             objects: vec![falling_ground],
+            textures: Vec::new(),
             background: WHITE,
             gravity: STANDARD_GRAVITY,
         };

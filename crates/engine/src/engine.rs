@@ -235,7 +235,7 @@ impl<G: Game> Engine<G> {
 pub(crate) mod testing {
     use super::*;
     use crate::input::Key;
-    use crate::render::{Color, GroundGrid, Shape, Visual, WHITE};
+    use crate::render::{Color, Material, PlaneSize, Shape, Visual, WHITE};
     use crate::scene::SceneObject;
     use physics::{Body, BodyType, Collider, DVec3, Motion, STANDARD_GRAVITY};
 
@@ -284,8 +284,8 @@ pub(crate) mod testing {
                     collider: Collider::HalfSpace,
                 },
                 visual: Visual {
-                    shape: Shape::GroundPlane(GroundGrid::default()),
-                    color: WHITE,
+                    shape: Shape::Plane(PlaneSize::Endless),
+                    material: Material::plain(WHITE),
                 },
             };
             let ball = |&(north, speed): &(f64, f64)| SceneObject {
@@ -299,13 +299,14 @@ pub(crate) mod testing {
                 },
                 visual: Visual {
                     shape: Shape::Sphere { radius: 0.5 },
-                    color: WHITE,
+                    material: Material::plain(WHITE),
                 },
             };
             Scene {
                 objects: std::iter::once(ground)
                     .chain(self.balls.iter().map(ball))
                     .collect(),
+                textures: Vec::new(),
                 background: Color::rgb(0.0, 0.0, 0.0),
                 gravity: STANDARD_GRAVITY,
             }
