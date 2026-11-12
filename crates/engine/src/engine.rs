@@ -35,12 +35,13 @@ pub trait Game {
     fn scene(&self) -> Scene;
 
     /// Called once the scene is loaded, and again after each restart,
-    /// before the next view: everything may have jumped, so a game camera
-    /// should cut rather than glide. The game outlives its scene (like
-    /// Unity's `DontDestroyOnLoad` objects, which hear of a new scene
-    /// through `SceneManager.sceneLoaded`). Optional: does nothing unless
-    /// a game needs it.
-    fn scene_loaded(&mut self) {}
+    /// before the next view, with the world as it now starts: everything
+    /// may have jumped, so a game camera should jump too rather than glide.
+    /// The game outlives its scene (like Unity's `DontDestroyOnLoad`
+    /// objects, which hear of a new scene through
+    /// `SceneManager.sceneLoaded`). Optional: does nothing unless a game
+    /// needs it.
+    fn scene_loaded(&mut self, _world: WorldView<'_>) {}
 
     /// Reacts to one input event. The bindings and the game's own controls
     /// (its camera; later, its aircraft) are the game's, like Godot's
@@ -129,7 +130,7 @@ impl<G: Game> Engine<G> {
             .unwrap_or_else(|error| panic!("invalid scene: {error}"));
         let sim = Simulation::new(start.clone(), game.physics_dt());
         let renderer = Renderer::new(backend, &scene);
-        game.scene_loaded();
+        game.scene_loaded(sim.view());
         let view = game.view(sim.view(), 0.0);
         let mut engine = Self {
             game,
@@ -193,7 +194,7 @@ impl<G: Game> Engine<G> {
             Command::Restart => {
                 self.sim = Simulation::new(self.start.clone(), self.game.physics_dt());
                 self.stats.restart_clock();
-                self.game.scene_loaded();
+                self.game.scene_loaded(self.sim.view());
             }
             Command::ToggleSlowFrames => self.lag = self.lag.toggled(DebugLag::Slow),
             Command::ToggleStalledFrames => self.lag = self.lag.toggled(DebugLag::Stalled),
@@ -328,7 +329,7 @@ pub(crate) mod testing {
             }
         }
 
-        fn scene_loaded(&mut self) {
+        fn scene_loaded(&mut self, _world: WorldView<'_>) {
             self.loads += 1;
         }
 

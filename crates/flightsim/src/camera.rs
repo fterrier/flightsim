@@ -102,15 +102,11 @@ pub(crate) struct Camera {
     pitch: f64,
     /// Length of the arm, in metres, within the limits.
     distance: f64,
-    /// Whether the last frame's state is something to glide *from*. Not at
-    /// the start, nor after a `cut`: then the next update jumps straight
-    /// to its goal (Cinemachine's `PreviousStateIsValid`).
-    previous_state_valid: bool,
 }
 
 impl Camera {
-    /// A camera with nothing to glide from yet: its first update jumps
-    /// straight to its target, wherever that is.
+    /// A camera looking at the origin, until told where to look with
+    /// `jump_to` (a game does it as soon as its scene is loaded).
     pub(crate) fn new() -> Self {
         Self {
             target: DVec3::ZERO,
@@ -118,16 +114,23 @@ impl Camera {
             yaw: wrap_angle(START_YAW_DEGREES.to_radians()),
             pitch: START_PITCH_DEGREES.to_radians(),
             distance: DEFAULT_DISTANCE,
-            previous_state_valid: false,
         }
     }
 
-    /// The next update jumps straight to the target instead of gliding:
-    /// for when the target teleports (a restart, a new scene), like
-    /// Cinemachine's `OnTargetObjectWarped`. The arm (angles, zoom) and
-    /// the mode stay as the player set them.
-    pub(crate) fn cut(&mut self) {
-        self.previous_state_valid = false;
+    /// Puts the camera on `target` (NED, metres) at once, no glide, and a
+    /// chase camera straight behind its `velocity` (NED, m/s): for when the
+    /// target appears or teleports (a new scene, a restart). Smoothing
+    /// remembers the previous frame; this overwrites that memory with the
+    /// new state, as Godot's `reset_physics_interpolation` does after a
+    /// teleport. The arm (angles, zoom) and the mode stay as the player set
+    /// them.
+    pub(crate) fn jump_to(&mut self, target: DVec3, velocity: DVec3) {
+        self.target = target;
+        if self.mode == CameraMode::Chase
+            && let Some(behind) = behind(velocity)
+        {
+            self.yaw = behind;
+        }
     }
 
     /// Where the camera is (NED, metres): at the end of the arm.
@@ -165,39 +168,35 @@ impl Camera {
 
     /// One frame lasting `frame_time` seconds: glides towards `target`
     /// (NED, metres), and when chasing, swings round behind it according to
-    /// its `velocity` (NED, m/s). With nothing to glide from (the first
-    /// update, or after a `cut`), jumps straight there instead, even when
-    /// fixed.
+    /// its `velocity` (NED, m/s).
     pub(crate) fn update(&mut self, target: DVec3, velocity: DVec3, frame_time: f64) {
-        let jump = !self.previous_state_valid;
-        self.previous_state_valid = true;
-        if self.mode == CameraMode::Fixed && !jump {
+        if self.mode == CameraMode::Fixed {
             return;
         }
-        self.target = if jump {
-            target
-        } else {
-            self.target + (target - self.target) * smoothing_factor(frame_time, HALF_LIFE)
-        };
-
-        // Only the horizontal motion: a ball falling straight down would
-        // otherwise swing the camera overhead.
-        let horizontal = velocity.truncate();
-        if self.mode == CameraMode::Chase && horizontal.length() >= MIN_CHASE_SPEED {
-            // Behind = the compass direction of motion, turned round.
-            let heading = horizontal.y.atan2(horizontal.x);
-            let behind = wrap_angle(heading + PI);
-            self.yaw = if jump {
-                behind
-            } else {
-                // Turn the short way round: from 170° to -170° is +20°,
-                // not -340°.
-                let turn = wrap_angle(behind - self.yaw);
-                let k = smoothing_factor(frame_time, CHASE_HALF_LIFE);
-                wrap_angle(self.yaw + turn * k)
-            };
+        self.target += (target - self.target) * smoothing_factor(frame_time, HALF_LIFE);
+        if self.mode == CameraMode::Chase
+            && let Some(behind) = behind(velocity)
+        {
+            // Turn the short way round: from 170° to -170° is +20°, not
+            // -340°.
+            let turn = wrap_angle(behind - self.yaw);
+            let k = smoothing_factor(frame_time, CHASE_HALF_LIFE);
+            self.yaw = wrap_angle(self.yaw + turn * k);
         }
     }
+}
+
+/// The yaw (radians) that puts the camera behind something moving at
+/// `velocity` (NED, m/s): the compass direction of its motion, turned
+/// round. Only the horizontal motion counts (a ball falling straight down
+/// would otherwise swing the camera overhead), and none if it's too slow
+/// to have a meaningful direction.
+fn behind(velocity: DVec3) -> Option<f64> {
+    let horizontal = velocity.truncate();
+    (horizontal.length() >= MIN_CHASE_SPEED).then(|| {
+        let heading = horizontal.y.atan2(horizontal.x);
+        wrap_angle(heading + PI)
+    })
 }
 
 /// Unit vector along an arm with compass direction `yaw` and `pitch` above
@@ -260,11 +259,10 @@ mod tests {
         camera
     }
 
-    /// A camera that has made its first jump: looking at `at`, ready to
-    /// glide from there.
+    /// A camera put on `at`, ready to glide from there.
     fn settled(at: DVec3) -> Camera {
         let mut camera = Camera::new();
-        camera.update(at, DVec3::ZERO, 1.0 / 60.0);
+        camera.jump_to(at, DVec3::ZERO);
         camera
     }
 
@@ -494,56 +492,37 @@ mod tests {
     }
 
     #[test]
-    fn the_first_update_jumps_to_the_target() {
-        // Nothing to glide from yet: no smoothing, wherever the target is.
-        let target = DVec3::new(500.0, -20.0, -3.0);
-        let mut camera = Camera::new();
-        camera.update(target, DVec3::ZERO, 1.0 / 60.0);
-        assert_eq!(camera.target, target);
-    }
-
-    #[test]
-    fn a_cut_jumps_to_the_target_keeping_the_players_arm_and_mode() {
+    fn jumping_puts_the_camera_on_the_target_at_once_keeping_arm_and_mode() {
         let mut camera = settled(DVec3::ZERO);
         camera.orbit(DVec2::new(100.0, 30.0));
         camera.zoom_by(150.0);
-        camera.next_mode();
+        camera.mode = CameraMode::Fixed; // even a fixed camera: it's a teleport
         let (yaw, pitch, distance) = (camera.yaw, camera.pitch, camera.distance);
 
-        // The target teleports 1 km north: the camera cuts, no glide.
-        camera.cut();
+        // The target teleports 1 km north: no glide across the map.
         let target = DVec3::new(1000.0, 0.0, -5.0);
-        camera.update(target, DVec3::ZERO, 1.0 / 60.0);
+        camera.jump_to(target, DVec3::ZERO);
         assert_eq!(camera.target, target);
-        assert_eq!(
-            (camera.yaw, camera.pitch, camera.distance),
-            (yaw, pitch, distance)
-        );
-        assert_eq!(camera.mode, CameraMode::Chase);
+        let arm = (camera.yaw, camera.pitch, camera.distance);
+        assert_eq!(arm, (yaw, pitch, distance));
+        assert_eq!(camera.mode, CameraMode::Fixed);
+    }
 
-        // Then it glides again.
+    #[test]
+    fn a_chase_camera_jumps_straight_behind_its_target() {
+        let mut camera = chasing(0.0);
+        camera.jump_to(DVec3::ZERO, moving_towards(90.0, 30.0));
+        assert_eq!(camera.yaw, wrap_angle(-PI / 2.0)); // west of it, exactly
+        // Without a direction of motion, it keeps its heading.
+        camera.jump_to(DVec3::ZERO, DVec3::ZERO);
+        assert_eq!(camera.yaw, wrap_angle(-PI / 2.0));
+    }
+
+    #[test]
+    fn after_a_jump_the_camera_glides_again() {
+        let mut camera = settled(DVec3::new(1000.0, 0.0, 0.0));
         camera.update(DVec3::ZERO, DVec3::ZERO, 1.0 / 60.0);
         assert!(camera.target.x > 900.0, "{}", camera.target);
-    }
-
-    #[test]
-    fn a_cut_chase_camera_jumps_straight_behind_its_target() {
-        let mut camera = chasing(0.0);
-        camera.cut();
-        camera.update(DVec3::ZERO, moving_towards(90.0, 30.0), 1.0 / 60.0);
-        assert_eq!(camera.yaw, wrap_angle(-PI / 2.0)); // west of it, exactly
-    }
-
-    #[test]
-    fn even_a_fixed_camera_jumps_after_a_cut_then_stays() {
-        let mut camera = settled(DVec3::ZERO);
-        camera.mode = CameraMode::Fixed;
-        camera.cut();
-        let target = DVec3::new(10.0, 20.0, 0.0);
-        camera.update(target, DVec3::ZERO, 1.0 / 60.0);
-        assert_eq!(camera.target, target);
-        camera.update(DVec3::ZERO, DVec3::ZERO, 1.0 / 60.0);
-        assert_eq!(camera.target, target);
     }
 
     #[test]
