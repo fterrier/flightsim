@@ -50,6 +50,8 @@ rotation maths (quaternions) to step 8.
 
 ## Architecture
 
+Diagrams (layers, types, one frame step by step): [ARCHITECTURE.md](ARCHITECTURE.md).
+
 The code is split like every game engine: a reusable **engine**, and the
 **game** built on it. The game depends on the engine, never the reverse,
 and the crate boundaries make the compiler enforce it.

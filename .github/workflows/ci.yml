@@ -1,5 +1,6 @@
-# Runs on every push and pull request. Exactly the three commands you can run
-# locally (see README "Develop"), so a green local run means a green CI run.
+# Runs on every push and pull request. Exactly the commands you can run
+# locally (see AGENTS.md "Before every commit"), so a green local run means
+# a green CI run.
 name: CI
 
 on:
@@ -26,6 +27,8 @@ jobs:
       # (see AGENTS.md "Engine vs game").
       - name: game does not use engine::platform
         run: "! grep -rn 'engine::platform' crates/flightsim"
+      # Every public and crate-visible type is on the architecture page.
+      - run: scripts/check-architecture.sh
 
   # Line coverage must stay >= 95% (see AGENTS.md). The engine_kiss3d crate
   # and flightsim's main.rs need a window and GPU; they must contain no

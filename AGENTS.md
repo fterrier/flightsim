@@ -2,7 +2,8 @@
 
 Instructions for anyone (human or AI agent) changing this code.
 Project goals are in [README.md](README.md), the step-by-step plan in
-[ROADMAP.md](ROADMAP.md).
+[ROADMAP.md](ROADMAP.md), diagrams of the code's structure in
+[ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## This is a learning project
 
@@ -89,14 +90,22 @@ meaningful doesn't count.
 
 ## Before every commit
 
-All four must pass (CI runs the same):
+All five must pass (CI runs the same):
 
 ```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo llvm-cov --workspace --fail-under-lines 95 --ignore-filename-regex 'crates/(engine_kiss3d/|flightsim/src/main\.rs)'
+scripts/check-architecture.sh
 ```
+
+**Keep [ARCHITECTURE.md](ARCHITECTURE.md) up to date in the same commit**
+as the code: when a type, trait or trait method is added, removed or
+renamed, when ownership changes (who holds what), when crates or the
+per-frame flow change. The script checks every public and crate-visible
+type is *named* there; putting it in the right diagram, with the right
+links, is the author's job and the reviewer's check.
 
 Also run the game (`cargo run -p flightsim`) when the step changes what's on
 screen.

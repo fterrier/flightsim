@@ -52,7 +52,9 @@ crates/
   alloc_count/    test-only: counts heap allocations (no allocation per frame)
 ```
 
-See [ROADMAP.md](ROADMAP.md) "Architecture" for what each part does.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for diagrams of the layers, the
+types and one frame step by step, and [ROADMAP.md](ROADMAP.md)
+"Architecture" for what each part does and why.
 
 ## Run
 
