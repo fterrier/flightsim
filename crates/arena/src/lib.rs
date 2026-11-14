@@ -79,28 +79,39 @@ macro_rules! id_type {
     };
 }
 
+/// What a slot of an arena holds: a value, or nothing and a link in the
+/// list of empty slots. One or the other, never both: an enum, as in
+/// `generational-arena` and `thunderdome` (`slotmap` packs the same into a
+/// union, at the cost of `unsafe` code).
+#[derive(Clone, Debug, PartialEq)]
+enum Content<V> {
+    Occupied(V),
+    /// Empty. `next_free`: the next empty slot to reuse after this one. The
+    /// list of empty slots lives in the empty slots themselves, so
+    /// removing a value never allocates.
+    Vacant {
+        next_free: Option<u32>,
+    },
+}
+
 /// One place of an arena.
 #[derive(Clone, Debug, PartialEq)]
 struct Slot<V> {
     /// How many times this slot was emptied: part of the IDs to its values.
     generation: u32,
-    /// The value, moved in by `insert` and out by `remove`.
-    value: Option<V>,
-    /// While empty: the next empty slot to reuse after this one. The list
-    /// of empty slots lives in the empty slots themselves, so removing a
-    /// value never allocates (as in `slotmap`).
-    next_free: Option<u32>,
+    content: Content<V>,
 }
 
 /// Values of type `V`, each identified by an ID of type `K` handed out
 /// when it's inserted.
 ///
 /// Memory: one `Vec` of slots, each holding a value (moved in and out,
-/// never copied: lookups and iteration hand out references), its
-/// generation and a free-list link. Insertion, lookup and removal take
-/// constant time. Removing never allocates; inserting allocates only when
-/// the `Vec` is full and grows (doubling, which moves the slots to the new
-/// buffer). Emptied slots are reused before the `Vec` grows.
+/// never copied: lookups and iteration hand out references) or, when
+/// empty, a link to the next empty slot; and its generation. Insertion,
+/// lookup and removal take constant time. Removing never allocates;
+/// inserting allocates only when the `Vec` is full and grows (doubling,
+/// which moves the slots to the new buffer). Emptied slots are reused,
+/// most recently emptied first, before the `Vec` grows.
 ///
 /// An arena only takes its own kind of ID: this doesn't compile.
 ///
@@ -119,8 +130,10 @@ struct Slot<V> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Arena<K, V> {
     slots: Vec<Slot<V>>,
-    /// The first empty slot to reuse, if any (see `Slot::next_free`).
-    first_free: Option<u32>,
+    /// The most recently emptied slot: the top of the stack of empty slots
+    /// (`slotmap`'s `free_head`), the first to be reused. `None`: no empty
+    /// slot, the next value goes at the end.
+    free_head: Option<u32>,
     len: usize,
     /// The ID type, without storing one (`fn(K)`: no ownership of a `K`).
     key: PhantomData<fn(K) -> K>,
@@ -130,7 +143,7 @@ impl<K: Id, V> Default for Arena<K, V> {
     fn default() -> Self {
         Self {
             slots: Vec::new(),
-            first_free: None,
+            free_head: None,
             len: 0,
             key: PhantomData,
         }
@@ -145,21 +158,27 @@ impl<K: Id, V> Arena<K, V> {
     /// Moves `value` in and returns its new ID.
     ///
     /// # Panics
-    /// With 2³² slots in use (as a `Vec` panics past its capacity).
+    /// With 2³² slots in use (as a `Vec` panics past its capacity), or if
+    /// the arena's own list of empty slots is broken (a bug in this code).
     pub fn insert(&mut self, value: V) -> K {
-        let index = match self.first_free {
+        let index = match self.free_head {
             Some(index) => {
                 let slot = &mut self.slots[index as usize];
-                self.first_free = slot.next_free.take();
-                slot.value = Some(value);
+                // The free list only ever links empty slots: finding a
+                // value here is a bug, and overwriting it would silently
+                // lose it. Refuse, as `generational-arena` does.
+                let Content::Vacant { next_free } = slot.content else {
+                    panic!("corrupt free list: slot {index} is occupied");
+                };
+                self.free_head = next_free;
+                slot.content = Content::Occupied(value);
                 index
             }
             None => {
                 let index = u32::try_from(self.slots.len()).expect("arena full: 2^32 slots");
                 self.slots.push(Slot {
                     generation: 0,
-                    value: Some(value),
-                    next_free: None,
+                    content: Content::Occupied(value),
                 });
                 index
             }
@@ -169,25 +188,26 @@ impl<K: Id, V> Arena<K, V> {
         K::from_raw(RawId { index, generation })
     }
 
-    /// The slot this ID points to, if its value is still there.
-    fn slot(&self, id: K) -> Option<&Slot<V>> {
-        let RawId { index, generation } = id.raw();
-        let slot = self.slots.get(index as usize)?;
-        (slot.generation == generation && slot.value.is_some()).then_some(slot)
-    }
-
     /// The value with this ID, if it's still here.
     pub fn get(&self, id: K) -> Option<&V> {
-        self.slot(id)?.value.as_ref()
+        let RawId { index, generation } = id.raw();
+        match self.slots.get(index as usize)? {
+            Slot {
+                generation: current,
+                content: Content::Occupied(value),
+            } if *current == generation => Some(value),
+            _ => None,
+        }
     }
 
     pub fn get_mut(&mut self, id: K) -> Option<&mut V> {
         let RawId { index, generation } = id.raw();
-        let slot = self.slots.get_mut(index as usize)?;
-        if slot.generation == generation {
-            slot.value.as_mut()
-        } else {
-            None
+        match self.slots.get_mut(index as usize)? {
+            Slot {
+                generation: current,
+                content: Content::Occupied(value),
+            } if *current == generation => Some(value),
+            _ => None,
         }
     }
 
@@ -196,25 +216,32 @@ impl<K: Id, V> Arena<K, V> {
     pub fn remove(&mut self, id: K) -> Option<V> {
         let RawId { index, generation } = id.raw();
         let slot = self.slots.get_mut(index as usize)?;
-        if slot.generation != generation {
-            return None;
+        let is_its_value =
+            slot.generation == generation && matches!(slot.content, Content::Occupied(_));
+        if !is_its_value {
+            return None; // stale, or never there: nothing changes
         }
-        let value = slot.value.take()?;
-        self.len -= 1;
         // The next value in this slot gets a new generation: old IDs to it
         // no longer match. A slot whose generation can't grow any more is
-        // retired (never reused), rather than wrapping round to 0, where an
-        // ID from four billion reuses ago would match again.
-        if let Some(next) = slot.generation.checked_add(1) {
-            slot.generation = next;
-            slot.next_free = self.first_free;
-            self.first_free = Some(index);
+        // retired (left empty, out of the free list, never reused), rather
+        // than wrapping round to 0, where an ID from four billion reuses
+        // ago would match again.
+        let next_free = match slot.generation.checked_add(1) {
+            Some(next) => {
+                slot.generation = next;
+                self.free_head.replace(index)
+            }
+            None => None,
+        };
+        self.len -= 1;
+        match std::mem::replace(&mut slot.content, Content::Vacant { next_free }) {
+            Content::Occupied(value) => Some(value),
+            Content::Vacant { .. } => None, // checked above: can't happen
         }
-        Some(value)
     }
 
     pub fn contains(&self, id: K) -> bool {
-        self.slot(id).is_some()
+        self.get(id).is_some()
     }
 
     pub fn len(&self) -> usize {
@@ -229,11 +256,14 @@ impl<K: Id, V> Arena<K, V> {
     /// the same insertions and removals (determinism).
     pub fn iter(&self) -> impl Iterator<Item = (K, &V)> {
         self.slots.iter().enumerate().filter_map(|(index, slot)| {
+            let Content::Occupied(value) = &slot.content else {
+                return None;
+            };
             let id = K::from_raw(RawId {
                 index: index as u32,
                 generation: slot.generation,
             });
-            slot.value.as_ref().map(|value| (id, value))
+            Some((id, value))
         })
     }
 
@@ -242,11 +272,14 @@ impl<K: Id, V> Arena<K, V> {
             .iter_mut()
             .enumerate()
             .filter_map(|(index, slot)| {
+                let Content::Occupied(value) = &mut slot.content else {
+                    return None;
+                };
                 let id = K::from_raw(RawId {
                     index: index as u32,
                     generation: slot.generation,
                 });
-                slot.value.as_mut().map(|value| (id, value))
+                Some((id, value))
             })
     }
 }
@@ -522,6 +555,36 @@ mod tests {
             generation: 0,
         });
         assert_eq!(things.get(wrapped), None);
+    }
+
+    #[test]
+    fn reinserting_reuses_the_last_emptied_slot_and_leaves_others_alone() {
+        let mut things = Arena::<ThingId, &str>::new();
+        let a = things.insert("a");
+        let b = things.insert("b");
+        let c = things.insert("c");
+        things.remove(a);
+        things.remove(b);
+        // Most recently emptied first (a stack, as in `slotmap`): b's slot,
+        // then a's.
+        let d = things.insert("d");
+        let e = things.insert("e");
+        assert_eq!((d.raw().index, e.raw().index), (1, 0));
+        // The live value was never touched, nor were the new ones.
+        let values = (things.get(c), things.get(d), things.get(e));
+        assert_eq!(values, (Some(&"c"), Some(&"d"), Some(&"e")));
+        assert_eq!(things.len(), 3);
+    }
+
+    #[test]
+    #[should_panic(expected = "corrupt free list: slot 0 is occupied")]
+    fn a_free_list_pointing_at_a_value_is_refused_not_overwritten() {
+        // Break the invariant by hand: the free list says slot 0 is empty,
+        // but it holds a value. Inserting must not silently drop it.
+        let mut things = Arena::<ThingId, &str>::new();
+        things.insert("alive");
+        things.free_head = Some(0);
+        things.insert("intruder");
     }
 
     #[test]
