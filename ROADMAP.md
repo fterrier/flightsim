@@ -292,19 +292,50 @@ a counting allocator (the test-only `alloc_count` crate): a full
 `Engine` frame, simulation to HUD, allocates nothing, and neither does
 the game's per-frame code (its input handling, camera and HUD lines).
 
-The rest isn't measurable with one entity, so steps 1-10 favour
-readability. At step 11, when entities multiply:
+Today's layout (step 5b, IDs): one storage per subsystem, all filled in
+spawn order. The scene's objects, the physics bodies (`World`), the
+simulation's per-entity data (body handle, previous and drawn
+positions, forces) and the renderer's proxies are separate arrays, and
+entity *i*'s data sits at slot *i* in each. Lookups are array indexing,
+so each loop walks a few arrays in order, which hardware prefetchers
+handle well. Not one big arena of whole entities: that is the
+game-object model (Unity GameObjects, Unreal Actors) that Unity DOTS and
+Unreal Mass were built to move away from, since every loop would load
+whole records (several cache lines) to use a few fields.
 
-- **Contiguous storage**: components in dense arrays (`Vec<T>`, not
-  `Vec<Box<T>>`). An archetype ECS gives this for free: each component
-  type is a column, so a system walks one array (Struct of Arrays).
-- **Instancing**: repeated objects (buildings) as one instance buffer, one
-  upload, one draw call, instead of one scene node each.
-- **Copy only what changed**: static objects are uploaded once; resting
-  bodies are skipped.
+The rest isn't measurable with a few entities, so steps 1-10 favour
+readability. The many-balls stress test is the benchmark scene for what
+follows. At step 11, when entities multiply, split data **by how it's
+accessed**, as engines do, measuring each change:
+
+- **Hot/cold split in physics** (Box2D 3's `b2Body` / `b2BodySim` /
+  32-byte `b2BodyState`; Jolt's `MotionProperties` only on moving
+  bodies): integration walks a packed array of moving-body state
+  (position, velocity, inverse mass, force) and nothing else. A body
+  slot is two cache lines today, for about 56 bytes integration needs.
+- **Group bodies by state** (Box2D's solver sets: static, awake,
+  sleeping): static bodies in their own array, never walked or written
+  by integration; resting bodies skipped.
+- **Contiguous components, no lookup maps**: one entity store with each
+  component in a packed column (Unity's 16 KiB archetype chunks, Bevy's
+  tables), or physics arrays in the same order as the render proxies
+  with one bulk sync per step (bevy_rapier's write-back). Today each
+  entity is visited up to three times per step, in three or four arrays,
+  through maps.
+- **Collision pass reads only what it needs** (position and collider,
+  not 80-byte bodies copied per pair), then a **broad phase** (step 12)
+  so far-apart pairs are never visited.
+- **Renderer walks drawn positions in proxy order**: two arrays side by
+  side, no lookups.
+- **Sparse data**: today's `SecondaryMap`s are indexed by slot, so they
+  leave holes where an entity has no such data; fine while every entity
+  has every kind of data. Once entities differ (a building has no
+  motion), archetypes store only what each kind has.
+- **Instancing**: repeated objects (balls, buildings) as one instance
+  buffer, one upload, one draw call, instead of one scene node each.
 - **No per-frame allocations** in hot paths: reuse buffers.
-- **Measure first**: a `criterion` benchmark of the sync, comparing
-  contiguous vs scattered layouts, before and after each optimisation.
+- **Measure first**: a `criterion` benchmark of physics and sync on the
+  stress-test scene, comparing layouts before and after each change.
 
 ## References
 
