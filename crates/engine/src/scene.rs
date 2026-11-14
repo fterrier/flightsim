@@ -113,6 +113,7 @@ mod tests {
                     velocity: DVec3::ZERO,
                 },
                 collider: Collider::Sphere { radius: 1.0 },
+                restitution: 0.0,
             },
             visual: Visual {
                 shape: Shape::Sphere { radius: 1.0 },

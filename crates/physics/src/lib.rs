@@ -101,7 +101,48 @@ pub struct Body {
     pub body_type: BodyType,
     pub motion: Motion,
     pub collider: Collider,
+    /// Bounciness, from 0 (dead: an impact stops it, like clay) to 1
+    /// (perfectly elastic: no energy lost, like an ideal billiard ball).
+    /// The *coefficient of restitution*: how much of the speed of approach
+    /// is given back as speed of separation. Per pair, the smaller of the
+    /// two bodies' values counts (see `restitution`).
+    // TODO(step-12): per collider (engines put it on the collider or its
+    // material), once a body has several.
+    pub restitution: f64,
 }
+
+/// The restitution of a collision between two bodies: the smaller of
+/// theirs. Engines offer several combine rules (Rapier averages by
+/// default, Box2D takes the larger, Unity and Rapier also offer the
+/// smaller); the smaller keeps a dead ground (0) dead under any ball,
+/// with no need for the "no bounce below some speed" threshold engines add
+/// to stop resting objects from jittering.
+fn restitution(a: &Body, b: &Body) -> f64 {
+    a.restitution.min(b.restitution)
+}
+
+/// 1 / mass, in 1/kg: how much an impulse changes a body's velocity.
+/// Static bodies are infinitely heavy: 0, an impulse doesn't move them.
+/// This lets one collision response handle moving and static bodies alike,
+/// as engines do.
+fn inverse_mass(body_type: BodyType) -> f64 {
+    match body_type {
+        BodyType::Dynamic { mass } => 1.0 / mass,
+        BodyType::Static => 0.0,
+    }
+}
+
+/// How many times per step the contacts' velocity impulses are solved.
+/// Each pass lets a push travel one more ball along a packed row, so a
+/// chain reaction crosses a rack within a step or two, as engines do with
+/// their "velocity iterations" (Box2D, Rapier). More: better chains,
+/// slower steps.
+const SOLVER_ITERATIONS: usize = 8;
+
+/// Room for this many contacts per body is set aside as bodies join the
+/// world, so steps don't allocate: a ball in a packed rack touches its
+/// neighbours and the ground. Busier piles make the buffer grow (once).
+const CONTACTS_PER_BODY: usize = 8;
 
 arena::id_type! {
     /// Identifies a body of a [`World`]: handed out by [`World::insert`],
@@ -143,6 +184,19 @@ pub struct World {
     /// iterate the arena itself). Kept as bodies are inserted, so stepping
     /// never allocates.
     ids: Vec<BodyId>,
+    /// The contacts found during the current step. Kept between steps so
+    /// its memory is reused: cleared, never freed.
+    touching: Vec<Touching>,
+}
+
+/// Two bodies found touching during a step, and how.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Touching {
+    a: BodyId,
+    b: BodyId,
+    /// Seen from `a`: the normal points the way `a` must move to get out.
+    contact: Contact,
+    restitution: f64,
 }
 
 /// Why a body can't join a world.
@@ -154,6 +208,9 @@ pub enum WorldError {
     /// The body is dynamic, but its mass isn't a positive number of
     /// kilograms: no force could move it sensibly.
     InvalidMass,
+    /// The body's restitution isn't between 0 and 1: it would gain energy
+    /// in every collision, or make no sense.
+    InvalidRestitution,
 }
 
 impl fmt::Display for WorldError {
@@ -163,6 +220,7 @@ impl fmt::Display for WorldError {
                 write!(f, "a dynamic body's collider can only be static")
             }
             WorldError::InvalidMass => write!(f, "a dynamic body's mass isn't positive"),
+            WorldError::InvalidRestitution => write!(f, "a body's restitution isn't within 0..=1"),
         }
     }
 }
@@ -177,6 +235,7 @@ impl World {
             gravity,
             bodies: Arena::new(),
             ids: Vec::new(),
+            touching: Vec::new(),
         }
     }
 
@@ -184,6 +243,9 @@ impl World {
     /// [`WorldError`]): checked once here, so `step` never meets a body it
     /// can't simulate.
     pub fn insert(&mut self, body: Body) -> Result<BodyId, WorldError> {
+        if !(0.0..=1.0).contains(&body.restitution) {
+            return Err(WorldError::InvalidRestitution);
+        }
         if let BodyType::Dynamic { mass } = body.body_type {
             if body.collider.must_be_static() {
                 return Err(WorldError::MustBeStatic);
@@ -200,6 +262,7 @@ impl World {
         };
         let id = self.bodies.insert(entry);
         self.ids.push(id);
+        self.touching.reserve(CONTACTS_PER_BODY);
         Ok(id)
     }
 
@@ -242,43 +305,116 @@ impl World {
             entry.force = DVec3::ZERO;
         }
 
-        // ...then collisions are found and resolved, in two separate
-        // stages as in every physics engine: *detection* (`contact`, per
-        // pair of shapes) says where two bodies overlap, *response*
-        // (`resolve`) acts on that, whatever the shapes.
+        // ...then collisions are found and resolved, in separate stages as
+        // in every physics engine: *detection* (`contact`, per pair of
+        // shapes) says which bodies touch and how; *response* acts on
+        // that, whatever the shapes: first velocities (`bounce`), then
+        // positions (`separate`).
         //
-        // Each moving body against each static one; every pair is tried,
-        // fine for a handful of bodies.
-        // TODO(step-12): moving bodies against each other too (the push is
-        // then shared according to their masses), with a broad phase to
-        // skip far-apart pairs.
-        //
-        // By ID, not by iterator: a body is moved while reading another
-        // in the same arena.
-        for &moving in &self.ids {
-            for &other in &self.ids {
-                // A copy (a few dozen bytes on the stack), so `moving` can
-                // be borrowed mutably next.
-                // TODO(step-11): with components in separate arrays (ECS),
-                // read only what's needed (the other body's position and
-                // collider) instead of copying the whole body.
-                let Some(other) = self.bodies.get(other).map(|e| e.body) else {
+        // Every pair is tried, fine for a hundred bodies or so.
+        // TODO(step-12): a broad phase, to skip far-apart pairs without
+        // testing them (the many-balls stress test measures when it pays).
+        self.find_contacts();
+        for _ in 0..SOLVER_ITERATIONS {
+            for touching in &self.touching {
+                Self::bounce_pair(&mut self.bodies, touching);
+            }
+        }
+        for touching in &self.touching {
+            Self::separate_pair(&mut self.bodies, touching);
+        }
+        self.time += dt;
+    }
+
+    /// Detection: fills `touching` with every pair of bodies that overlap,
+    /// at least one of them moving (two static bodies never collide). By
+    /// ID, in insertion order: the same order every time (determinism).
+    fn find_contacts(&mut self) {
+        self.touching.clear();
+        for (i, &a) in self.ids.iter().enumerate() {
+            for &b in &self.ids[i + 1..] {
+                let (Some(first), Some(second)) = (self.bodies.get(a), self.bodies.get(b)) else {
                     continue;
                 };
-                let Some(entry) = self.bodies.get_mut(moving) else {
-                    continue;
-                };
-                let body = &mut entry.body;
-                if !body.body_type.is_dynamic() || other.body_type != BodyType::Static {
+                let (first, second) = (&first.body, &second.body);
+                if !first.body_type.is_dynamic() && !second.body_type.is_dynamic() {
                     continue;
                 }
-                let (a, b) = (&body.motion.position, &other.motion.position);
-                if let Some(contact) = contact(body.collider, *a, other.collider, *b) {
-                    resolve(&mut body.motion, contact);
+                let (at_a, at_b) = (first.motion.position, second.motion.position);
+                if let Some(contact) = contact(first.collider, at_a, second.collider, at_b) {
+                    let restitution = restitution(first, second);
+                    self.touching.push(Touching {
+                        a,
+                        b,
+                        contact,
+                        restitution,
+                    });
                 }
             }
         }
-        self.time += dt;
+    }
+
+    /// Velocity response to one contact (see `bounce`), written back to
+    /// the moving bodies only: static ones never change (and aren't
+    /// written, as Box2D avoids writing them).
+    // TODO(step-11): read and write only velocities and inverse masses, in
+    // packed arrays, instead of copying motions in and out by ID.
+    fn bounce_pair(bodies: &mut Arena<BodyId, Entry>, touching: &Touching) {
+        let (Some(a), Some(b)) = (bodies.get(touching.a), bodies.get(touching.b)) else {
+            return;
+        };
+        let (inverse_a, inverse_b) = (
+            inverse_mass(a.body.body_type),
+            inverse_mass(b.body.body_type),
+        );
+        // A static body's velocity is ignored: it doesn't move.
+        let mut velocity_a = moving_velocity(&a.body);
+        let mut velocity_b = moving_velocity(&b.body);
+        bounce(
+            (&mut velocity_a, inverse_a),
+            (&mut velocity_b, inverse_b),
+            touching.contact.normal,
+            touching.restitution,
+        );
+        for (id, velocity) in [(touching.a, velocity_a), (touching.b, velocity_b)] {
+            if let Some(entry) = bodies.get_mut(id).filter(|e| e.body.body_type.is_dynamic()) {
+                entry.body.motion.velocity = velocity;
+            }
+        }
+    }
+
+    /// Position response to one contact (see `separate`), written back to
+    /// the moving bodies only.
+    fn separate_pair(bodies: &mut Arena<BodyId, Entry>, touching: &Touching) {
+        let (Some(a), Some(b)) = (bodies.get(touching.a), bodies.get(touching.b)) else {
+            return;
+        };
+        let (inverse_a, inverse_b) = (
+            inverse_mass(a.body.body_type),
+            inverse_mass(b.body.body_type),
+        );
+        let mut position_a = a.body.motion.position;
+        let mut position_b = b.body.motion.position;
+        separate(
+            (&mut position_a, inverse_a),
+            (&mut position_b, inverse_b),
+            touching.contact,
+        );
+        for (id, position) in [(touching.a, position_a), (touching.b, position_b)] {
+            if let Some(entry) = bodies.get_mut(id).filter(|e| e.body.body_type.is_dynamic()) {
+                entry.body.motion.position = position;
+            }
+        }
+    }
+}
+
+/// A body's velocity as collisions see it: a static body doesn't move,
+/// whatever velocity it was given.
+fn moving_velocity(body: &Body) -> DVec3 {
+    if body.body_type.is_dynamic() {
+        body.motion.velocity
+    } else {
+        DVec3::ZERO
     }
 }
 
@@ -365,22 +501,50 @@ fn sphere_sphere(a: DVec3, ra: f64, b: DVec3, rb: f64) -> Option<Contact> {
     (depth > 0.0).then_some(Contact { normal, depth })
 }
 
-/// Collision response, against something static: pushes a moving body out
-/// along the contact normal and cancels its velocity into the surface. A
-/// perfectly inelastic impact, no bounce; sliding along the surface is
-/// kept, as there's no friction yet.
+/// Velocity response to a contact, with an *impulse*: an instant change
+/// of momentum, along the contact `normal` (pointing the way `a` must move
+/// to get out of `b`). `a` and `b` are each a velocity (m/s, NED) and an
+/// inverse mass (1/kg; 0 for a static body, which doesn't move).
 ///
-/// Integration moves in discrete jumps, so a falling ball ends up slightly
-/// *inside* the ground on the step it lands: that overlap is the contact's
-/// depth.
-// TODO(step-12): spring-damper forces instead (landing gear), with rolling
+/// The textbook impulse (Box2D's and Rapier's contacts work the same way):
+/// if the bodies are approaching along the normal at speed `v`, the
+/// impulse `j = (1 + e) v / (1/m_a + 1/m_b)` turns that approach into a
+/// separation `e` times as fast, sharing the change by inverse mass: the
+/// lighter body changes most. Momentum is conserved (equal and opposite
+/// impulses); kinetic energy too when `e = 1`. Sliding along the surface
+/// is kept, as there's no friction yet. Bodies already separating are left
+/// alone.
+// TODO(step-12): spring-damper forces for landing gear, with rolling
 // friction and brakes.
-fn resolve(motion: &mut Motion, contact: Contact) {
-    motion.position += contact.normal * contact.depth;
-    let into = motion.velocity.dot(contact.normal);
-    if into < 0.0 {
-        motion.velocity -= contact.normal * into;
+fn bounce(a: (&mut DVec3, f64), b: (&mut DVec3, f64), normal: DVec3, restitution: f64) {
+    let ((velocity_a, inverse_a), (velocity_b, inverse_b)) = (a, b);
+    let total = inverse_a + inverse_b;
+    // Speed of `a` relative to `b`, along the normal: negative when
+    // approaching.
+    let along = (*velocity_a - *velocity_b).dot(normal);
+    if along >= 0.0 || total == 0.0 {
+        return;
     }
+    let impulse = -(1.0 + restitution) * along / total;
+    *velocity_a += normal * (impulse * inverse_a);
+    *velocity_b -= normal * (impulse * inverse_b);
+}
+
+/// Position response to a contact: pushes two overlapping bodies apart by
+/// the contact's depth, along its normal, shared by inverse mass (a static
+/// body doesn't move; two equal balls each move half). `a` and `b` are
+/// each a position (m, NED) and an inverse mass.
+///
+/// Integration moves in discrete jumps, so bodies end up slightly *inside*
+/// each other on the step they meet: the overlap is the contact's depth.
+fn separate(a: (&mut DVec3, f64), b: (&mut DVec3, f64), contact: Contact) {
+    let ((position_a, inverse_a), (position_b, inverse_b)) = (a, b);
+    let total = inverse_a + inverse_b;
+    if total == 0.0 {
+        return;
+    }
+    *position_a += contact.normal * (contact.depth * inverse_a / total);
+    *position_b -= contact.normal * (contact.depth * inverse_b / total);
 }
 
 #[cfg(test)]
@@ -401,6 +565,7 @@ mod tests {
                 velocity: DVec3::ZERO,
             },
             collider: Collider::HalfSpace,
+            restitution: 0.0,
         }
     }
 
@@ -419,6 +584,7 @@ mod tests {
             body_type: BodyType::Dynamic { mass: 1.0 },
             motion: thrown(),
             collider: Collider::Sphere { radius: RADIUS },
+            restitution: 0.0,
         }
     }
 
@@ -431,6 +597,7 @@ mod tests {
                 velocity: DVec3::ZERO,
             },
             collider: Collider::Sphere { radius },
+            restitution: 0.0,
         }
     }
 
@@ -606,34 +773,137 @@ mod tests {
         assert_eq!(contact(plane, DVec3::ZERO, plane, DVec3::ZERO), None);
     }
 
-    #[test]
-    fn response_pushes_out_and_cancels_the_velocity_into_the_surface() {
-        let mut motion = Motion {
-            position: DVec3::new(3.0, 4.0, 0.1),
-            velocity: DVec3::new(5.0, 6.0, 2.0), // falling
-        };
-        let contact = Contact {
-            normal: DVec3::NEG_Z,
-            depth: 0.5,
-        };
-        resolve(&mut motion, contact);
-        assert!((motion.position - DVec3::new(3.0, 4.0, -0.4)).length() < PUSH_TOLERANCE);
-        // Falling stops; no friction yet, so it keeps sliding.
-        assert_eq!(motion.velocity, DVec3::new(5.0, 6.0, 0.0));
+    /// Velocities after `bounce` between `a` and `b` (velocity, mass;
+    /// `None` for a static body), along `normal`, with `restitution`.
+    fn after_bounce(
+        a: (DVec3, Option<f64>),
+        b: (DVec3, Option<f64>),
+        normal: DVec3,
+        restitution: f64,
+    ) -> (DVec3, DVec3) {
+        let inverse = |mass: Option<f64>| mass.map_or(0.0, |m| 1.0 / m);
+        let (mut velocity_a, mut velocity_b) = (a.0, b.0);
+        bounce(
+            (&mut velocity_a, inverse(a.1)),
+            (&mut velocity_b, inverse(b.1)),
+            normal,
+            restitution,
+        );
+        (velocity_a, velocity_b)
+    }
+
+    /// Velocity tolerance: an impulse is a few products and a division.
+    const IMPULSE_TOLERANCE: f64 = 1e-12;
+
+    fn assert_close(actual: DVec3, expected: DVec3) {
+        let gap = (actual - expected).length();
+        assert!(gap < IMPULSE_TOLERANCE, "{actual} instead of {expected}");
     }
 
     #[test]
-    fn response_keeps_a_velocity_already_leaving_the_surface() {
-        let mut motion = Motion {
-            position: DVec3::ZERO,
-            velocity: DVec3::new(1.0, 0.0, -3.0), // going up
-        };
+    fn against_the_ground_falling_stops_and_sliding_goes_on() {
+        // A falling ball on a static ground, dead (restitution 0): its
+        // downward speed is cancelled; no friction yet, so it keeps sliding.
+        let falling = DVec3::new(5.0, 6.0, 2.0);
+        let (ball, _) = after_bounce((falling, Some(1.0)), (DVec3::ZERO, None), DVec3::NEG_Z, 0.0);
+        assert_eq!(ball, DVec3::new(5.0, 6.0, 0.0));
+    }
+
+    #[test]
+    fn separating_bodies_are_left_alone() {
+        let rising = DVec3::new(1.0, 0.0, -3.0);
+        let (ball, _) = after_bounce((rising, Some(1.0)), (DVec3::ZERO, None), DVec3::NEG_Z, 0.0);
+        assert_eq!(ball, rising);
+    }
+
+    #[test]
+    fn equal_balls_meeting_elastically_exchange_velocities() {
+        // Head-on, along x: `a` (on the left) must move left (-x) to get
+        // out of `b`. Elastic: like billiard balls, or Newton's cradle.
+        let (a, b) = after_bounce(
+            (DVec3::new(3.0, 0.0, 0.0), Some(2.0)),
+            (DVec3::new(-1.0, 0.0, 0.0), Some(2.0)),
+            DVec3::NEG_X,
+            1.0,
+        );
+        assert_close(a, DVec3::new(-1.0, 0.0, 0.0));
+        assert_close(b, DVec3::new(3.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn unequal_masses_follow_the_textbook_elastic_collision() {
+        // 1 kg at 2 m/s hits 3 kg at rest. In 1D, elastic:
+        // v1' = (m1 - m2) / (m1 + m2) v = -1 m/s (bounces back),
+        // v2' = 2 m1 / (m1 + m2) v = +1 m/s.
+        let (light, heavy) = after_bounce(
+            (DVec3::new(2.0, 0.0, 0.0), Some(1.0)),
+            (DVec3::ZERO, Some(3.0)),
+            DVec3::NEG_X,
+            1.0,
+        );
+        assert_close(light, DVec3::new(-1.0, 0.0, 0.0));
+        assert_close(heavy, DVec3::new(1.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn momentum_is_conserved_and_restitution_scales_the_separation() {
+        // Any restitution: momentum before = after. Separation speed =
+        // restitution × approach speed (here 4 m/s along the normal).
+        for restitution in [0.0, 0.5, 1.0] {
+            let (va, vb) = (DVec3::new(3.0, 1.0, 0.0), DVec3::new(-1.0, 2.0, 0.0));
+            let (ma, mb) = (2.0, 5.0);
+            let (a, b) = after_bounce((va, Some(ma)), (vb, Some(mb)), DVec3::NEG_X, restitution);
+            assert_close(a * ma + b * mb, va * ma + vb * mb);
+            let separation = (a - b).dot(DVec3::NEG_X);
+            assert!((separation - restitution * 4.0).abs() < IMPULSE_TOLERANCE);
+            // Across the normal (y), nothing changes: no friction.
+            assert_eq!((a.y, b.y), (va.y, vb.y));
+        }
+    }
+
+    #[test]
+    fn overlapping_bodies_are_pushed_apart_by_inverse_mass() {
         let contact = Contact {
-            normal: DVec3::NEG_Z,
-            depth: 0.1,
+            normal: DVec3::NEG_X,
+            depth: 0.3,
         };
-        resolve(&mut motion, contact);
-        assert_eq!(motion.velocity, DVec3::new(1.0, 0.0, -3.0));
+        let separated = |mass_a: Option<f64>, mass_b: Option<f64>| {
+            let inverse = |mass: Option<f64>| mass.map_or(0.0, |m| 1.0 / m);
+            let (mut a, mut b) = (DVec3::ZERO, DVec3::new(1.0, 0.0, 0.0));
+            separate(
+                (&mut a, inverse(mass_a)),
+                (&mut b, inverse(mass_b)),
+                contact,
+            );
+            (a.x, b.x)
+        };
+        // Equal: each moves half the overlap. Against a static body: the
+        // moving one does it all. Two static bodies: nothing moves.
+        let (a, b) = separated(Some(1.0), Some(1.0));
+        assert!((a + 0.15).abs() < IMPULSE_TOLERANCE && (b - 1.15).abs() < IMPULSE_TOLERANCE);
+        assert_eq!(separated(Some(1.0), None), (-0.3, 1.0));
+        assert_eq!(separated(None, None), (0.0, 1.0));
+    }
+
+    #[test]
+    fn two_static_bodies_never_bounce() {
+        let still = DVec3::new(1.0, 0.0, 0.0);
+        let (a, b) = after_bounce((still, None), (-still, None), DVec3::NEG_X, 1.0);
+        assert_eq!((a, b), (still, -still));
+    }
+
+    #[test]
+    fn the_smaller_restitution_of_the_two_counts() {
+        let bouncy = Body {
+            restitution: 0.9,
+            ..thrown_ball()
+        };
+        let dead = Body {
+            restitution: 0.0,
+            ..ground(0.0)
+        };
+        assert_eq!(restitution(&bouncy, &dead), 0.0);
+        assert_eq!(restitution(&bouncy, &bouncy), 0.9);
     }
 
     #[test]
@@ -685,6 +955,7 @@ mod tests {
                 velocity: DVec3::ZERO,
             },
             collider: BIG_SPHERE,
+            restitution: 0.0,
         };
         let rock = add(&mut world, rock_body);
         for _ in 0..(5 * 120) {
@@ -748,6 +1019,7 @@ mod tests {
                 velocity: DVec3::ZERO,
             },
             collider: SPHERE,
+            restitution: 0.0,
         }
     }
 
@@ -925,13 +1197,118 @@ mod tests {
         assert_eq!(get(&world, resting), resting_ball(5.0, 1.0));
     }
 
+    /// A ball of `radius` 0.4 m and 1 kg at `north` metres, moving north
+    /// at `speed`, with `restitution`, in weightless space.
+    fn billiard_ball(north: f64, speed: f64, restitution: f64) -> Body {
+        Body {
+            body_type: BodyType::Dynamic { mass: 1.0 },
+            motion: Motion {
+                position: DVec3::new(north, 0.0, 0.0),
+                velocity: DVec3::new(speed, 0.0, 0.0),
+            },
+            collider: SPHERE,
+            restitution,
+        }
+    }
+
+    #[test]
+    fn a_chain_reaction_passes_the_momentum_down_a_row_of_balls() {
+        // Newton's cradle: five touching elastic balls, a sixth comes in
+        // at 1 m/s. The last one should leave at about 1 m/s and the others
+        // end about still, with momentum (5 kg × 0 + 1 kg × 1 m/s) kept.
+        let mut world = World::new(DVec3::ZERO);
+        let striker = add(&mut world, billiard_ball(-1.0, 1.0, 1.0));
+        let row: Vec<BodyId> = (0..5)
+            .map(|i| add(&mut world, billiard_ball(0.8 * f64::from(i), 0.0, 1.0)))
+            .collect();
+        for _ in 0..240 {
+            world.step(DT);
+        }
+        let speed = |id| get(&world, id).motion.velocity.x;
+        let momentum = speed(striker) + row.iter().map(|&id| speed(id)).sum::<f64>();
+        assert!((momentum - 1.0).abs() < 1e-9, "momentum {momentum}");
+        assert!(
+            (speed(row[4]) - 1.0).abs() < 0.05,
+            "last ball: {}",
+            speed(row[4])
+        );
+        assert!(speed(striker).abs() < 0.05, "striker: {}", speed(striker));
+    }
+
+    #[test]
+    fn a_bouncy_ball_on_a_dead_ground_still_lands_dead() {
+        // The ground's restitution (0) is the smaller: no bounce.
+        let mut world = World::new(STANDARD_GRAVITY);
+        let ball = add(
+            &mut world,
+            Body {
+                restitution: 0.9,
+                ..thrown_ball()
+            },
+        );
+        add(&mut world, ground(0.0));
+        for _ in 0..600 {
+            world.step(DT);
+        }
+        assert_eq!(-get(&world, ball).motion.position.z, RADIUS);
+        assert_eq!(get(&world, ball).motion.velocity.z, 0.0);
+    }
+
+    #[test]
+    fn touching_balls_resting_on_the_ground_stay_put() {
+        let mut world = World::new(STANDARD_GRAVITY);
+        add(&mut world, ground(0.0));
+        let left = Body {
+            restitution: 0.9,
+            ..resting_ball(0.0, RADIUS)
+        };
+        let right = Body {
+            motion: Motion {
+                position: DVec3::new(2.0 * RADIUS, 0.0, -RADIUS),
+                velocity: DVec3::ZERO,
+            },
+            ..left
+        };
+        let (a, b) = (add(&mut world, left), add(&mut world, right));
+        for _ in 0..600 {
+            world.step(DT);
+        }
+        let near =
+            |id, body: Body| (get(&world, id).motion.position - body.motion.position).length();
+        assert!(near(a, left) < 1e-9 && near(b, right) < 1e-9);
+    }
+
+    #[test]
+    fn restitution_must_be_between_0_and_1() {
+        for restitution in [-0.1, 1.5, f64::NAN] {
+            let body = Body {
+                restitution,
+                ..thrown_ball()
+            };
+            let error = World::new(STANDARD_GRAVITY).insert(body);
+            assert_eq!(error, Err(WorldError::InvalidRestitution), "{restitution}");
+        }
+        assert_eq!(
+            WorldError::InvalidRestitution.to_string(),
+            "a body's restitution isn't within 0..=1"
+        );
+    }
+
     #[test]
     fn simulation_is_deterministic() {
         // Two worlds fed the same steps must be bit-identical (assert_eq!,
         // not a tolerance). Replays in step 10 rely on this.
         let build = || {
             let mut world = World::new(STANDARD_GRAVITY);
-            for body in [ground(0.0), thrown_ball(), resting_ball(5.0, 1.0)] {
+            // Colliding balls, bouncing: the most order-sensitive case.
+            let bodies = [
+                ground(0.0),
+                thrown_ball(),
+                resting_ball(5.0, 1.0),
+                billiard_ball(-1.0, 3.0, 0.8),
+                billiard_ball(0.0, 0.0, 0.8),
+            ];
+            for body in bodies {
                 add(&mut world, body);
             }
             world

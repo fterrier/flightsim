@@ -300,6 +300,7 @@ pub(crate) mod testing {
                         velocity: DVec3::ZERO,
                     },
                     collider: Collider::HalfSpace,
+                    restitution: 0.0,
                 },
                 visual: Visual {
                     shape: Shape::Plane(PlaneSize::Endless),
@@ -317,6 +318,7 @@ pub(crate) mod testing {
                                 velocity: DVec3::new(speed, 0.0, 0.0),
                             },
                             collider: Collider::Sphere { radius: 0.5 },
+                            restitution: 0.0,
                         },
                         visual: Visual {
                             shape: Shape::Sphere { radius: 0.5 },
@@ -519,6 +521,7 @@ mod tests {
                     velocity: DVec3::ZERO,
                 },
                 collider: Collider::HalfSpace,
+                restitution: 0.0,
             },
             visual: Visual {
                 shape: Shape::Plane(PlaneSize::Endless),

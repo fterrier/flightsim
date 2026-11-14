@@ -52,6 +52,7 @@ fn ground(grid: TextureId) -> SceneObject {
                 velocity: DVec3::ZERO,
             },
             collider: Collider::HalfSpace,
+            restitution: 0.0,
         },
         visual: Visual {
             shape: Shape::Plane(PlaneSize::Endless),
@@ -79,6 +80,7 @@ fn ball() -> SceneObject {
             collider: Collider::Sphere {
                 radius: BALL_RADIUS,
             },
+            restitution: 0.9,
         },
         visual: Visual {
             shape: Shape::Sphere {

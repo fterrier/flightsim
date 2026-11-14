@@ -133,11 +133,13 @@ classDiagram
             <<enum>>
             MustBeStatic
             InvalidMass
+            InvalidRestitution
         }
         class Body {
             body_type: BodyType
             motion: Motion
             collider: Collider
+            restitution: f64
         }
         class BodyType {
             <<enum>>
@@ -466,6 +468,7 @@ sequenceDiagram
         Note over G: pushes the ball<br/>(Forces::add by EntityId)
         S->>W: add_force(BodyId, force) per entity
         S->>W: step(dt)
+        Note over W: integrate, find contacts,<br/>bounce (impulses, 8 passes),<br/>separate overlaps
     end
     Note over S: drawn = blend of the<br/>last two physics states
     E->>G: view(WorldView, frame_time)

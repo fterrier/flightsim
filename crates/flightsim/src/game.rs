@@ -409,6 +409,7 @@ mod tests {
                 velocity: DVec3::ZERO,
             },
             collider,
+            restitution: 0.0,
         };
         // A ball centred 2.4 m up (z is down): its bottom is 2 m up.
         let ball = at(-2.4, Collider::Sphere { radius: 0.4 });

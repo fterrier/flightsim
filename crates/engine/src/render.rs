@@ -404,6 +404,7 @@ mod tests {
                     velocity: DVec3::ZERO,
                 },
                 collider: Collider::Sphere { radius: 0.4 },
+                restitution: 0.0,
             },
             visual: BALL,
         }
@@ -420,6 +421,7 @@ mod tests {
                     velocity: DVec3::ZERO,
                 },
                 collider: Collider::HalfSpace,
+                restitution: 0.0,
             },
             visual: Visual {
                 shape: Shape::Plane(PlaneSize::Endless),
