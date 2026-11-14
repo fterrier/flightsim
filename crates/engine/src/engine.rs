@@ -1,21 +1,20 @@
 //! The engine: runs a game, one frame at a time.
 //!
-//! A game plugs in through the [`Game`] trait: its scene (content), how it
-//! reacts to input (its controls, its camera) and its own HUD lines.
-//! Everything else is the engine's: the simulation with its fixed steps,
-//! input translation, rendering and diagnostics. Like MonoGame's `Game`
-//! class (`Update` + `Draw` called by the framework's loop) or Bevy's
-//! `App`: the engine runs the frame, the game supplies what makes it
-//! *this* game.
+//! A game plugs in through the [`Game`] trait: how it reacts to input (its
+//! controls, its camera), what it does each physics step, what it looks at
+//! and its own HUD lines. It's created by filling in the scene it plays
+//! (`Engine::new`), keeping the IDs of what it spawns. Everything else is
+//! the engine's: the simulation with its fixed steps, input translation,
+//! rendering and diagnostics. Like MonoGame's `Game` class (`Update` +
+//! `Draw` called by the framework's loop) or Bevy's `App`: the engine runs
+//! the frame, the game supplies what makes it *this* game.
 //!
 //! The loop itself (window, clock, events) is the platform's job
 //! (`engine_kiss3d::run`); each iteration it calls `input` for every event
-//! and then `frame`.
+//! and then `frame`. Without a window, `Headless` runs the same engine.
 
 use std::fmt::{self, Write};
 use std::time::Duration;
-
-use physics::{Body, World};
 
 use crate::hud::{FrameStats, Hud};
 use crate::input::{Command, InputEvent, Mouse, RawInput};
@@ -29,9 +28,6 @@ pub trait Game {
     /// setting, like Godot's "physics ticks per second".
     fn physics_dt(&self) -> f64;
 
-    /// The scene to load at start; `Command::Restart` goes back to it.
-    fn scene(&self) -> Scene;
-
     /// Called once the scene is loaded, and again after each restart,
     /// before the next view, with the world as it now starts: everything
     /// may have jumped, so a game camera should jump too rather than glide.
@@ -41,13 +37,13 @@ pub trait Game {
     /// needs it.
     fn scene_loaded(&mut self, _world: WorldView<'_>) {}
 
-    /// Called before each physics step, with the bodies as they are: game
+    /// Called before each physics step, with the world as it is: game
     /// logic that acts on the world, at the physics rate rather than the
     /// frame rate (Unity's `FixedUpdate`, Godot's `_physics_process`). It
-    /// pushes bodies with `forces`, for this step only. Input arrives per
+    /// pushes entities with `forces`, for this step only. Input arrives per
     /// frame (`input`); a game records it there and acts on it here.
     /// Optional: does nothing unless a game needs it.
-    fn fixed_update(&mut self, _bodies: &[Body], _forces: &mut Forces<'_>) {}
+    fn fixed_update(&mut self, _world: WorldView<'_>, _forces: &mut Forces<'_>) {}
 
     /// Reacts to one input event. The bindings and the game's own controls
     /// (its camera; later, its aircraft) are the game's, like Godot's
@@ -58,8 +54,8 @@ pub trait Game {
     /// Where to look from and at, for this frame, which lasted
     /// `frame_time` real seconds (0 for the very first picture). The game
     /// moves its camera as it likes, as with a camera script in Unity or
-    /// Godot; `world.drawn` says where each body is drawn, so a camera can
-    /// follow as smoothly as the picture moves.
+    /// Godot; `world.drawn(entity)` says where an entity is drawn, so a
+    /// camera can follow as smoothly as the picture moves.
     fn view(&mut self, world: WorldView<'_>, frame_time: f64) -> View;
 
     /// The game's own HUD lines, written under the engine's diagnostics.
@@ -110,8 +106,11 @@ impl DebugLag {
 
 pub struct Engine<G: Game> {
     game: G,
-    /// The world as the scene starts, kept to start again on restart.
-    start: World,
+    /// The scene the game filled in: its description, kept to load it
+    /// again (`Command::ReloadScene`), as engines reload a level from its
+    /// asset. Reloading it gives the same entities, so the game's IDs stay
+    /// valid.
+    scene: Scene,
     sim: Simulation,
     /// Turns raw mouse reports into drags.
     mouse: Mouse,
@@ -125,22 +124,20 @@ pub struct Engine<G: Game> {
 }
 
 impl<G: Game> Engine<G> {
-    /// Loads the game's scene and prepares the first frame (the platform
-    /// shows one before the first `frame` call).
-    pub fn new(backend: &mut impl RenderBackend, mut game: G) -> Self {
-        // TODO(step-09): once scenes come from files, report errors to the
-        // player instead of panicking.
-        let scene = game.scene();
-        let start = scene
-            .world()
-            .unwrap_or_else(|error| panic!("invalid scene: {error}"));
-        let sim = Simulation::new(start.clone(), game.physics_dt());
+    /// Creates the game with `new_game`, which fills in an empty scene
+    /// (spawning objects, adding textures, keeping the IDs it's handed),
+    /// loads that scene, and prepares the first frame (the platform shows
+    /// one before the first `frame` call).
+    pub fn new(backend: &mut impl RenderBackend, new_game: impl FnOnce(&mut Scene) -> G) -> Self {
+        let mut scene = Scene::default();
+        let mut game = new_game(&mut scene);
+        let sim = load(&scene, game.physics_dt());
         let renderer = Renderer::new(backend, &scene);
         game.scene_loaded(sim.view());
         let view = game.view(sim.view(), 0.0);
         let mut engine = Self {
             game,
-            start,
+            scene,
             sim,
             mouse: Mouse::default(),
             screen_scale: f64::from(backend.screen().scale),
@@ -156,11 +153,16 @@ impl<G: Game> Engine<G> {
     /// Reacts to one raw input report from the platform: translated into a
     /// game-level event, handed to the game.
     pub fn input(&mut self, raw: RawInput) -> Flow {
-        let command = self
-            .mouse
-            .translate(raw, self.screen_scale)
-            .and_then(|event| self.game.input(event));
-        match command {
+        match self.mouse.translate(raw, self.screen_scale) {
+            Some(event) => self.input_event(event),
+            None => Flow::Continue,
+        }
+    }
+
+    /// Hands a game-level event to the game, and carries out the command
+    /// it answers with, if any.
+    pub(crate) fn input_event(&mut self, event: InputEvent) -> Flow {
+        match self.game.input(event) {
             Some(command) => self.execute(command),
             None => Flow::Continue,
         }
@@ -173,9 +175,9 @@ impl<G: Game> Engine<G> {
         self.stats.record(frame_time);
         self.screen_scale = f64::from(backend.screen().scale);
         let game = &mut self.game;
-        let steps = self.sim.advance(frame_time, |bodies, forces| {
-            game.fixed_update(bodies, forces)
-        });
+        let steps = self
+            .sim
+            .advance(frame_time, |world, forces| game.fixed_update(world, forces));
         let view = self.game.view(self.sim.view(), frame_time);
         self.draw(backend, view, steps);
     }
@@ -185,14 +187,12 @@ impl<G: Game> Engine<G> {
         self.lag.delay()
     }
 
-    /// For tests, to check what the simulation did.
-    #[cfg(test)]
-    pub(crate) fn simulation(&self) -> &Simulation {
-        &self.sim
+    /// The world's data, read-only.
+    pub(crate) fn world(&self) -> WorldView<'_> {
+        self.sim.view()
     }
 
-    /// For tests, to check what the game was told.
-    #[cfg(test)]
+    /// The game being run.
     pub(crate) fn game(&self) -> &G {
         &self.game
     }
@@ -200,8 +200,10 @@ impl<G: Game> Engine<G> {
     fn execute(&mut self, command: Command) -> Flow {
         match command {
             Command::Quit => return Flow::Quit,
-            Command::Restart => {
-                self.sim = Simulation::new(self.start.clone(), self.game.physics_dt());
+            Command::ReloadScene => {
+                // The render proxies stay: same entities, same looks; only
+                // the simulation starts over.
+                self.sim = load(&self.scene, self.game.physics_dt());
                 self.stats.restart_clock();
                 self.game.scene_loaded(self.sim.view());
             }
@@ -248,24 +250,30 @@ impl<G: Game> Engine<G> {
     }
 }
 
+/// The simulation of `scene`, in steps of `dt` seconds.
+// TODO(step-09): once scenes come from files, report errors to the player
+// instead of panicking.
+fn load(scene: &Scene, dt: f64) -> Simulation {
+    Simulation::load(scene, dt).unwrap_or_else(|error| panic!("invalid scene: {error}"))
+}
+
 /// A minimal game for tests: a ground, then balls resting on it at given
-/// x positions, simple bindings, a camera fixed to one object, one HUD
-/// line of its own. It remembers what it was told, for tests to check.
+/// north positions and sliding north, simple bindings, a camera fixed to
+/// one ball, one HUD line of its own. It remembers what it was told, for
+/// tests to check.
 #[cfg(test)]
 pub(crate) mod testing {
     use super::*;
     use crate::input::Key;
-    use crate::render::{Color, Material, PlaneSize, Shape, Visual, WHITE};
-    use crate::scene::SceneObject;
-    use physics::{Body, BodyType, Collider, DVec3, Motion, STANDARD_GRAVITY};
+    use crate::render::{Material, PlaneSize, Shape, Visual, WHITE};
+    use crate::scene::{EntityId, SceneObject};
+    use physics::{Body, BodyType, Collider, DVec3, Motion};
 
     pub(crate) struct TestGame {
-        /// Where the balls start (metres north) and how fast they slide
-        /// north (m/s).
-        pub balls: Vec<(f64, f64)>,
-        /// The object the camera looks at: 0 is the ground, 1 the first
-        /// ball.
-        pub focus: usize,
+        /// The balls spawned, in the order asked.
+        pub balls: Vec<EntityId>,
+        /// The entity the camera looks at: the first ball.
+        pub focus: EntityId,
         /// The latest input event the game got.
         pub last_event: Option<InputEvent>,
         /// The latest frame time the game's view was asked for.
@@ -281,10 +289,45 @@ pub(crate) mod testing {
     }
 
     impl TestGame {
-        pub(crate) fn new(balls: Vec<(f64, f64)>, focus: usize) -> Self {
+        /// Spawns a ground and balls into `scene`: one per `(north, speed)`,
+        /// resting `north` metres north, sliding north at `speed` m/s.
+        pub(crate) fn spawn(scene: &mut Scene, balls: &[(f64, f64)]) -> Self {
+            scene.spawn(SceneObject {
+                body: Body {
+                    body_type: BodyType::Static,
+                    motion: Motion {
+                        position: DVec3::ZERO,
+                        velocity: DVec3::ZERO,
+                    },
+                    collider: Collider::HalfSpace,
+                },
+                visual: Visual {
+                    shape: Shape::Plane(PlaneSize::Endless),
+                    material: Material::plain(WHITE),
+                },
+            });
+            let balls: Vec<EntityId> = balls
+                .iter()
+                .map(|&(north, speed)| {
+                    scene.spawn(SceneObject {
+                        body: Body {
+                            body_type: BodyType::Dynamic { mass: 1.0 },
+                            motion: Motion {
+                                position: DVec3::new(north, 0.0, -0.5),
+                                velocity: DVec3::new(speed, 0.0, 0.0),
+                            },
+                            collider: Collider::Sphere { radius: 0.5 },
+                        },
+                        visual: Visual {
+                            shape: Shape::Sphere { radius: 0.5 },
+                            material: Material::plain(WHITE),
+                        },
+                    })
+                })
+                .collect();
             Self {
+                focus: balls[0],
                 balls,
-                focus,
                 last_event: None,
                 last_frame_time: None,
                 scenes_loaded: 0,
@@ -305,50 +348,11 @@ pub(crate) mod testing {
             1.0 / 64.0
         }
 
-        fn scene(&self) -> Scene {
-            let ground = SceneObject {
-                body: Body {
-                    body_type: BodyType::Static,
-                    motion: Motion {
-                        position: DVec3::ZERO,
-                        velocity: DVec3::ZERO,
-                    },
-                    collider: Collider::HalfSpace,
-                },
-                visual: Visual {
-                    shape: Shape::Plane(PlaneSize::Endless),
-                    material: Material::plain(WHITE),
-                },
-            };
-            let ball = |&(north, speed): &(f64, f64)| SceneObject {
-                body: Body {
-                    body_type: BodyType::Dynamic { mass: 1.0 },
-                    motion: Motion {
-                        position: DVec3::new(north, 0.0, -0.5),
-                        velocity: DVec3::new(speed, 0.0, 0.0),
-                    },
-                    collider: Collider::Sphere { radius: 0.5 },
-                },
-                visual: Visual {
-                    shape: Shape::Sphere { radius: 0.5 },
-                    material: Material::plain(WHITE),
-                },
-            };
-            Scene {
-                objects: std::iter::once(ground)
-                    .chain(self.balls.iter().map(ball))
-                    .collect(),
-                textures: Vec::new(),
-                background: Color::rgb(0.0, 0.0, 0.0),
-                gravity: STANDARD_GRAVITY,
-            }
-        }
-
         fn scene_loaded(&mut self, _world: WorldView<'_>) {
             self.loads += 1;
         }
 
-        fn fixed_update(&mut self, _bodies: &[Body], forces: &mut Forces<'_>) {
+        fn fixed_update(&mut self, _world: WorldView<'_>, forces: &mut Forces<'_>) {
             self.steps_seen += 1;
             forces.add(self.focus, self.push);
         }
@@ -357,7 +361,7 @@ pub(crate) mod testing {
             self.last_event = Some(event);
             match event {
                 InputEvent::KeyPressed(Key::Q) => Some(Command::Quit),
-                InputEvent::KeyPressed(Key::R) => Some(Command::Restart),
+                InputEvent::KeyPressed(Key::R) => Some(Command::ReloadScene),
                 InputEvent::KeyPressed(Key::L) => Some(Command::ToggleSlowFrames),
                 InputEvent::KeyPressed(Key::K) => Some(Command::ToggleStalledFrames),
                 _ => None,
@@ -367,7 +371,7 @@ pub(crate) mod testing {
         fn view(&mut self, world: WorldView<'_>, frame_time: f64) -> View {
             self.last_frame_time = Some(frame_time);
             self.scenes_loaded = self.loads;
-            let target = world.drawn[self.focus];
+            let target = world.drawn(self.focus).unwrap_or_default();
             View {
                 eye: target + CAMERA_OFFSET,
                 target,
@@ -375,7 +379,7 @@ pub(crate) mod testing {
         }
 
         fn write_hud(&self, world: WorldView<'_>, out: &mut String) -> fmt::Result {
-            let north = world.bodies[self.focus].motion.position.x;
+            let north = world.body(self.focus).map_or(0.0, |b| b.motion.position.x);
             write!(out, "test game: focus {north:.1} m north")
         }
     }
@@ -386,10 +390,11 @@ mod tests {
     use super::testing::TestGame;
     use super::*;
     use crate::input::{Key, MouseButton};
-    use crate::render::Screen;
     use crate::render::fakes::RecordingBackend;
+    use crate::render::{Material, PlaneSize, Screen, Shape, Visual, WHITE};
+    use crate::scene::SceneObject;
     use glam::Vec3;
-    use physics::{DVec2, DVec3};
+    use physics::{Body, BodyType, Collider, DVec2, DVec3, Motion};
 
     /// Exact in binary floating point.
     const FRAME: f64 = 1.0 / 64.0;
@@ -400,16 +405,17 @@ mod tests {
         scale: 1.0,
     };
 
-    /// An engine running `game`, with physics steps of `FRAME`.
-    fn engine(game: TestGame) -> (Engine<TestGame>, RecordingBackend) {
+    /// An engine running the test game with `balls` (see
+    /// `TestGame::spawn`), with physics steps of `FRAME`.
+    fn engine(balls: &[(f64, f64)]) -> (Engine<TestGame>, RecordingBackend) {
         let mut backend = RecordingBackend::new(SCREEN);
-        let engine = Engine::new(&mut backend, game);
+        let engine = Engine::new(&mut backend, |scene| TestGame::spawn(scene, balls));
         (engine, backend)
     }
 
     /// One ball at x = 0 sliding at 64 m/s: exactly 1 m per physics step.
-    fn sliding_ball() -> TestGame {
-        TestGame::new(vec![(0.0, 64.0)], 1)
+    fn sliding_ball() -> (Engine<TestGame>, RecordingBackend) {
+        engine(&[(0.0, 64.0)])
     }
 
     fn press(engine: &mut Engine<TestGame>, key: Key) -> Flow {
@@ -421,80 +427,79 @@ mod tests {
         lines.join("\n")
     }
 
-    fn ball_x(engine: &Engine<TestGame>) -> f64 {
-        engine.simulation().world().bodies[1].motion.position.x // 0 is the ground
+    /// The physics state of the ball the test game focuses on.
+    fn focus(engine: &Engine<TestGame>) -> Body {
+        *engine.world().body(engine.game.focus).expect("a body")
     }
 
     #[test]
     fn the_first_frame_is_prepared_on_creation() {
         // The platform shows a frame before the first `frame()` call.
-        let (engine, backend) = engine(sliding_ball());
+        let (engine, backend) = sliding_ball();
         assert_eq!(backend.proxies.len(), 2); // the ground and the ball
         assert!(backend.camera.is_some());
         assert!(!backend.texts.is_empty());
-        assert_eq!(engine.game().last_frame_time, Some(0.0));
+        assert_eq!(engine.game.last_frame_time, Some(0.0));
     }
 
     #[test]
     fn the_game_hears_of_each_scene_load_before_its_next_view() {
-        // At load, then after a restart: in time for the game to cut its
-        // camera before the next picture.
-        let (mut engine, mut backend) = engine(sliding_ball());
-        assert_eq!(engine.game().scenes_loaded, 1);
+        // At load, then after a restart: in time for the game to put its
+        // camera in place before the next picture.
+        let (mut engine, mut backend) = sliding_ball();
+        assert_eq!(engine.game.scenes_loaded, 1);
         press(&mut engine, Key::R);
         engine.frame(&mut backend, FRAME);
-        assert_eq!(engine.game().scenes_loaded, 2);
+        assert_eq!(engine.game.scenes_loaded, 2);
     }
 
     #[test]
     fn a_frame_runs_the_physics_steps_its_duration_calls_for() {
-        let (mut engine, mut backend) = engine(sliding_ball());
+        let (mut engine, mut backend) = sliding_ball();
         engine.frame(&mut backend, 2.0 * FRAME);
-        assert_eq!(ball_x(&engine), 2.0);
-        assert_eq!(engine.simulation().world().time(), 2.0 * FRAME);
+        assert_eq!(focus(&engine).motion.position.x, 2.0);
+        assert_eq!(engine.world().time, 2.0 * FRAME);
     }
 
     #[test]
     fn the_game_acts_once_before_each_physics_step() {
-        let (mut engine, mut backend) = engine(sliding_ball());
+        let (mut engine, mut backend) = sliding_ball();
         engine.frame(&mut backend, 2.0 * FRAME); // two steps
-        assert_eq!(engine.game().steps_seen, 2);
+        assert_eq!(engine.game.steps_seen, 2);
         engine.frame(&mut backend, 0.5 * FRAME); // no step this frame
-        assert_eq!(engine.game().steps_seen, 2);
+        assert_eq!(engine.game.steps_seen, 2);
     }
 
     #[test]
-    fn the_game_pushes_bodies_through_forces() {
+    fn the_game_pushes_entities_through_forces() {
         // 64 N north on the 1 kg ball for one 1/64 s step: +1 m/s, on top
         // of its 64 m/s slide.
-        let mut game = sliding_ball();
-        game.push = DVec3::new(64.0, 0.0, 0.0);
-        let (mut engine, mut backend) = engine(game);
+        let (mut engine, mut backend) = sliding_ball();
+        engine.game.push = DVec3::new(64.0, 0.0, 0.0);
         engine.frame(&mut backend, FRAME);
-        let velocity = engine.simulation().world().bodies[1].motion.velocity;
-        assert_eq!(velocity.x, 65.0);
+        assert_eq!(focus(&engine).motion.velocity.x, 65.0);
     }
 
     #[test]
     fn the_picture_is_drawn_from_the_view_the_game_chooses() {
-        let game = TestGame::new(vec![(1.0, 0.0), (50.0, 0.0)], 2);
-        let (mut engine, mut backend) = engine(game);
+        let (mut engine, mut backend) = engine(&[(1.0, 0.0), (50.0, 0.0)]);
+        engine.game.focus = engine.game.balls[1];
         engine.frame(&mut backend, FRAME);
-        assert_eq!(engine.game().last_frame_time, Some(FRAME));
-        // The test game looks at ball 2, resting 50 m north, 0.5 m up: in
-        // render axes (east, up, south) that's (0, 0.5, -50). Its eye is
-        // 10 m south and 10 m up: +10 in render y and z.
+        assert_eq!(engine.game.last_frame_time, Some(FRAME));
+        // The test game looks at the second ball, resting 50 m north,
+        // 0.5 m up: in render axes (east, up, south) that's (0, 0.5, -50).
+        // Its eye is 10 m south and 10 m up: +10 in render y and z.
         let (eye, target) = backend.camera.expect("a camera is set");
         assert_eq!(target, Vec3::new(0.0, 0.5, -50.0));
         assert_eq!(eye - target, Vec3::new(0.0, 10.0, 10.0));
     }
 
     #[test]
-    fn the_game_sees_where_bodies_are_drawn_between_steps() {
+    fn the_game_sees_where_entities_are_drawn_between_steps() {
         // 1.5 steps of time: one step ran (the ball moved from 0 to 1 m
         // north), with half a step left over, so it's drawn halfway
         // between those two states: 0.5 m north, render z = -0.5.
-        let (mut engine, mut backend) = engine(sliding_ball());
+        let (mut engine, mut backend) = sliding_ball();
         engine.frame(&mut backend, 1.5 * FRAME);
         let (_, target) = backend.camera.expect("a camera is set");
         assert_eq!(target.z, -0.5);
@@ -502,36 +507,33 @@ mod tests {
 
     #[test]
     #[should_panic(
-        expected = "invalid scene: body 0 is dynamic, but its collider can only be static"
+        expected = "invalid scene: object EntityId(0v0): a dynamic body's collider can only be static"
     )]
     fn an_impossible_scene_is_refused_at_load() {
-        /// A game whose ground falls: its scene is impossible.
-        struct FallingGround;
-        impl Game for FallingGround {
-            fn physics_dt(&self) -> f64 {
-                1.0 / 64.0
-            }
-            fn scene(&self) -> Scene {
-                let mut scene = sliding_ball().scene();
-                scene.objects[0].body.body_type = physics::BodyType::Dynamic { mass: 1.0 };
-                scene
-            }
-            fn input(&mut self, _event: InputEvent) -> Option<Command> {
-                None
-            }
-            fn view(&mut self, world: WorldView<'_>, _frame_time: f64) -> View {
-                sliding_ball().view(world, 0.0)
-            }
-            fn write_hud(&self, _: WorldView<'_>, _: &mut String) -> fmt::Result {
-                Ok(())
-            }
-        }
-        Engine::new(&mut RecordingBackend::new(SCREEN), FallingGround);
+        // A ground that would fall: endless and dynamic.
+        let falling_ground = SceneObject {
+            body: Body {
+                body_type: BodyType::Dynamic { mass: 1.0 },
+                motion: Motion {
+                    position: DVec3::ZERO,
+                    velocity: DVec3::ZERO,
+                },
+                collider: Collider::HalfSpace,
+            },
+            visual: Visual {
+                shape: Shape::Plane(PlaneSize::Endless),
+                material: Material::plain(WHITE),
+            },
+        };
+        Engine::new(&mut RecordingBackend::new(SCREEN), |scene| {
+            scene.spawn(falling_ground);
+            TestGame::spawn(scene, &[(0.0, 0.0)])
+        });
     }
 
     #[test]
     fn hud_shows_engine_diagnostics_then_the_game_lines() {
-        let (mut engine, mut backend) = engine(sliding_ball());
+        let (mut engine, mut backend) = sliding_ball();
         backend.texts.clear();
         engine.frame(&mut backend, 2.0 * FRAME);
         let text = hud_text(&backend);
@@ -542,7 +544,7 @@ mod tests {
 
     #[test]
     fn fps_appears_once_half_a_second_of_frames_is_measured() {
-        let (mut engine, mut backend) = engine(sliding_ball());
+        let (mut engine, mut backend) = sliding_ball();
         for _ in 0..32 {
             backend.texts.clear();
             engine.frame(&mut backend, FRAME);
@@ -553,7 +555,7 @@ mod tests {
     #[test]
     fn input_reaches_the_game_as_game_level_events() {
         // Raw reports in, a drag out: the game handles it itself.
-        let (mut engine, _) = engine(sliding_ball());
+        let (mut engine, _) = sliding_ball();
         engine.input(RawInput::CursorMoved(DVec2::new(100.0, 100.0)));
         engine.input(RawInput::MouseButton {
             button: MouseButton::Left,
@@ -562,7 +564,7 @@ mod tests {
         let flow = engine.input(RawInput::CursorMoved(DVec2::new(130.0, 90.0)));
         assert_eq!(flow, Flow::Continue);
         assert_eq!(
-            engine.game().last_event,
+            engine.game.last_event,
             Some(InputEvent::MouseDragged {
                 button: MouseButton::Left,
                 delta: DVec2::new(30.0, -10.0),
@@ -572,23 +574,28 @@ mod tests {
 
     #[test]
     fn unbound_input_does_nothing() {
-        let (mut engine, _) = engine(sliding_ball());
+        let (mut engine, _) = sliding_ball();
         assert_eq!(press(&mut engine, Key::Z), Flow::Continue);
     }
 
     #[test]
     fn quit_ends_the_game_loop() {
-        let (mut engine, _) = engine(sliding_ball());
+        let (mut engine, _) = sliding_ball();
         assert_eq!(press(&mut engine, Key::Q), Flow::Quit);
     }
 
     #[test]
-    fn restart_reloads_the_scene_and_restarts_both_clocks() {
-        let (mut engine, mut backend) = engine(sliding_ball());
+    fn reloading_the_scene_restarts_it_and_both_clocks() {
+        let (mut engine, mut backend) = sliding_ball();
+        let ball = engine.game.focus;
         engine.frame(&mut backend, 4.0 * FRAME);
         assert_eq!(press(&mut engine, Key::R), Flow::Continue);
-        assert_eq!(ball_x(&engine), 0.0);
-        assert_eq!(engine.simulation().world().time(), 0.0);
+        // The same entity, back where it started.
+        assert_eq!(
+            engine.world().body(ball).map(|b| b.motion.position.x),
+            Some(0.0)
+        );
+        assert_eq!(engine.world().time, 0.0);
         backend.texts.clear();
         engine.frame(&mut backend, 0.0);
         assert!(hud_text(&backend).contains("real time  0.00 s"));
@@ -596,7 +603,7 @@ mod tests {
 
     #[test]
     fn hud_shows_the_debug_lag() {
-        let (mut engine, mut backend) = engine(sliding_ball());
+        let (mut engine, mut backend) = sliding_ball();
         for (key, shown) in [
             (Key::L, "debug lag: slow frames (+50 ms)"),
             (Key::K, "debug lag: stalled frames (+400 ms)"),
@@ -611,7 +618,7 @@ mod tests {
 
     #[test]
     fn debug_lag_makes_frames_slower_until_switched_off() {
-        let (mut engine, _) = engine(sliding_ball());
+        let (mut engine, _) = sliding_ball();
         assert_eq!(engine.debug_delay(), Duration::ZERO);
         press(&mut engine, Key::L);
         assert_eq!(engine.debug_delay(), Duration::from_millis(50));

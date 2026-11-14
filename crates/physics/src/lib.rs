@@ -20,6 +20,8 @@ pub use glam::{DVec2, DVec3};
 
 use std::fmt;
 
+use arena::Arena;
+
 /// Standard gravity at the Earth's surface, in m/s², pointing down (+z in
 /// NED): the usual value for a [`World`]'s `gravity`.
 ///
@@ -43,7 +45,7 @@ pub struct Motion {
 /// Whether a body moves. As in physics engines, the ground is a body like
 /// any other, one that never moves: Rapier's `RigidBodyType::Fixed`, Jolt's
 /// `EMotionType::Static`, Box2D's `b2_staticBody`, PhysX's `PxRigidStatic`.
-/// One list of bodies, one index for each.
+/// One collection of bodies, one ID for each.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum BodyType {
     /// Moves under gravity and the forces applied to it, and is stopped by
@@ -101,10 +103,25 @@ pub struct Body {
     pub collider: Collider,
 }
 
+arena::id_type! {
+    /// Identifies a body of a [`World`]: handed out by [`World::insert`],
+    /// like Rapier's `RigidBodyHandle`. Opaque and generational (see the
+    /// `arena` crate).
+    pub struct BodyId;
+}
+
+/// A body as the world stores it: the body, and the forces pushing it
+/// during the coming step.
+#[derive(Clone, Debug, PartialEq)]
+struct Entry {
+    body: Body,
+    /// Newtons (NED), accumulated by `add_force`, cleared after each step.
+    force: DVec3,
+}
+
 /// Everything the simulation knows about.
-// TODO(step-11): bodies become ECS entities; the `Vec` index becomes an
-// entity ID (a generational handle, safe once objects can be removed).
-// Systems like `integrate` won't change: they take components.
+// TODO(step-11): bodies become ECS components; systems like `integrate`
+// won't change: they take components.
 #[derive(Clone, Debug, PartialEq)]
 pub struct World {
     /// Simulated time since the start, in seconds. Private, so only `step`
@@ -118,35 +135,34 @@ pub struct World {
     /// (`b2WorldDef`): the engine assumes no particular planet, nor which
     /// way is down.
     pub gravity: DVec3,
-    /// All simulated objects, moving and static, stored contiguously.
-    /// Their index identifies them: the world has no built-in ground,
-    /// whatever ground exists is one of these bodies.
-    pub bodies: Vec<Body>,
+    /// All simulated objects, moving and static, by ID. The world has no
+    /// built-in ground: whatever ground exists is one of these bodies.
+    bodies: Arena<BodyId, Entry>,
+    /// Every body's ID, in insertion order: what the collision pass goes
+    /// through, since it modifies bodies while reading others (so it can't
+    /// iterate the arena itself). Kept as bodies are inserted, so stepping
+    /// never allocates.
+    ids: Vec<BodyId>,
 }
 
-/// Why a world can't be created.
+/// Why a body can't join a world.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum WorldError {
-    /// Body number `body` is dynamic, but its collider can only be static
-    /// (see [`Collider::must_be_static`]).
-    MustBeStatic { body: usize },
-    /// Body number `body` is dynamic, but its mass isn't a positive number
-    /// of kilograms: no force could move it sensibly.
-    InvalidMass { body: usize },
+    /// The body is dynamic, but its collider can only be static (see
+    /// [`Collider::must_be_static`]).
+    MustBeStatic,
+    /// The body is dynamic, but its mass isn't a positive number of
+    /// kilograms: no force could move it sensibly.
+    InvalidMass,
 }
 
 impl fmt::Display for WorldError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            WorldError::MustBeStatic { body } => {
-                write!(
-                    f,
-                    "body {body} is dynamic, but its collider can only be static"
-                )
+            WorldError::MustBeStatic => {
+                write!(f, "a dynamic body's collider can only be static")
             }
-            WorldError::InvalidMass { body } => {
-                write!(f, "body {body} is dynamic, but its mass isn't positive")
-            }
+            WorldError::InvalidMass => write!(f, "a dynamic body's mass isn't positive"),
         }
     }
 }
@@ -154,27 +170,42 @@ impl fmt::Display for WorldError {
 impl std::error::Error for WorldError {}
 
 impl World {
-    /// A world at time zero, if every body makes sense (see
-    /// [`WorldError`]): checked once here, so `step` never meets a body it
-    /// can't simulate.
-    pub fn new(bodies: Vec<Body>, gravity: DVec3) -> Result<Self, WorldError> {
-        for (index, body) in bodies.iter().enumerate() {
-            if let BodyType::Dynamic { mass } = body.body_type {
-                if body.collider.must_be_static() {
-                    return Err(WorldError::MustBeStatic { body: index });
-                }
-                // A finite number (not NaN, not infinite) above zero.
-                let valid = mass.is_finite() && mass > 0.0;
-                if !valid {
-                    return Err(WorldError::InvalidMass { body: index });
-                }
-            }
-        }
-        Ok(Self {
+    /// An empty world at time zero.
+    pub fn new(gravity: DVec3) -> Self {
+        Self {
             time: 0.0,
             gravity,
-            bodies,
-        })
+            bodies: Arena::new(),
+            ids: Vec::new(),
+        }
+    }
+
+    /// Adds `body` and returns its new ID, if it makes sense (see
+    /// [`WorldError`]): checked once here, so `step` never meets a body it
+    /// can't simulate.
+    pub fn insert(&mut self, body: Body) -> Result<BodyId, WorldError> {
+        if let BodyType::Dynamic { mass } = body.body_type {
+            if body.collider.must_be_static() {
+                return Err(WorldError::MustBeStatic);
+            }
+            // A finite number (not NaN, not infinite) above zero.
+            let valid = mass.is_finite() && mass > 0.0;
+            if !valid {
+                return Err(WorldError::InvalidMass);
+            }
+        }
+        let entry = Entry {
+            body,
+            force: DVec3::ZERO,
+        };
+        let id = self.bodies.insert(entry);
+        self.ids.push(id);
+        Ok(id)
+    }
+
+    /// The body with this ID, if it's in this world.
+    pub fn body(&self, id: BodyId) -> Option<&Body> {
+        self.bodies.get(id).map(|entry| &entry.body)
     }
 
     /// Simulated time since the start, in seconds.
@@ -182,27 +213,33 @@ impl World {
         self.time
     }
 
-    /// Advances the whole simulation by exactly `dt` seconds, with
-    /// `forces[i]` (newtons, NED) pushing body `i` throughout the step;
-    /// bodies past the end of `forces` get none.
-    ///
-    /// Forces are inputs, like `dt`: the physics never knows where they come
-    /// from (a player's keys, an engine's thrust, wings' lift), as with
-    /// Rapier's `add_force` or Unity's `AddForce` from game code.
+    /// Pushes body `id` with `force` (newtons, NED) during the next step,
+    /// on top of any other force added for it. Cleared after the step, so
+    /// a steady push is added again every step (Rapier's `add_force`,
+    /// Box2D's `b2Body_ApplyForce`). The physics never knows where forces
+    /// come from (a player's keys, an engine's thrust, wings' lift). A body
+    /// not in this world is ignored; static bodies ignore forces anyway.
+    pub fn add_force(&mut self, id: BodyId, force: DVec3) {
+        if let Some(entry) = self.bodies.get_mut(id) {
+            entry.force += force;
+        }
+    }
+
+    /// Advances the whole simulation by exactly `dt` seconds.
     ///
     /// Callers must always pass the same `dt` (the fixed timestep), see
     /// `FixedTimestep` in the engine.
-    pub fn step(&mut self, dt: f64, forces: &[DVec3]) {
+    pub fn step(&mut self, dt: f64) {
         // Each system runs over every body, taking only the components it
         // needs. First everything moves...
-        for (index, body) in self.bodies.iter_mut().enumerate() {
-            if let BodyType::Dynamic { mass } = body.body_type {
-                let force = forces.get(index).copied().unwrap_or(DVec3::ZERO);
+        for (_, entry) in self.bodies.iter_mut() {
+            if let BodyType::Dynamic { mass } = entry.body.body_type {
                 // Newton's second law: a = F / m, plus gravity (the same
                 // acceleration for any mass).
-                let acceleration = self.gravity + force / mass;
-                integrate(&mut body.motion, acceleration, dt);
+                let acceleration = self.gravity + entry.force / mass;
+                integrate(&mut entry.body.motion, acceleration, dt);
             }
+            entry.force = DVec3::ZERO;
         }
 
         // ...then collisions are found and resolved, in two separate
@@ -216,17 +253,22 @@ impl World {
         // then shared according to their masses), with a broad phase to
         // skip far-apart pairs.
         //
-        // Indices, not iterators: a body is moved while reading another
-        // in the same list.
-        for i in 0..self.bodies.len() {
-            for j in 0..self.bodies.len() {
-                // A copy (a few dozen bytes on the stack), so `bodies[i]`
-                // can be borrowed mutably next.
+        // By ID, not by iterator: a body is moved while reading another
+        // in the same arena.
+        for &moving in &self.ids {
+            for &other in &self.ids {
+                // A copy (a few dozen bytes on the stack), so `moving` can
+                // be borrowed mutably next.
                 // TODO(step-11): with components in separate arrays (ECS),
                 // read only what's needed (the other body's position and
                 // collider) instead of copying the whole body.
-                let other = self.bodies[j];
-                let body = &mut self.bodies[i];
+                let Some(other) = self.bodies.get(other).map(|e| e.body) else {
+                    continue;
+                };
+                let Some(entry) = self.bodies.get_mut(moving) else {
+                    continue;
+                };
+                let body = &mut entry.body;
                 if !body.body_type.is_dynamic() || other.body_type != BodyType::Static {
                     continue;
                 }
@@ -393,8 +435,14 @@ mod tests {
     }
 
     /// A world of valid `bodies` (tests build it from known-good bodies).
-    fn world(bodies: Vec<Body>, gravity: DVec3) -> World {
-        World::new(bodies, gravity).expect("valid bodies")
+    /// Puts `body` into `world`, which must accept it: its new ID.
+    fn add(world: &mut World, body: Body) -> BodyId {
+        world.insert(body).expect("a valid body")
+    }
+
+    /// Body `id` of `world`, which must be there.
+    fn get(world: &World, id: BodyId) -> Body {
+        *world.body(id).expect("in the world")
     }
 
     /// Integrates `motion` under gravity alone (no ground) for `seconds`.
@@ -593,23 +641,24 @@ mod tests {
         // The ground is not built in: it's a static body the world may or
         // may not have (like a Rapier fixed body or a Godot StaticBody3D),
         // placed by the scene.
-        let mut world = world(vec![thrown_ball()], STANDARD_GRAVITY);
+        let mut world = World::new(STANDARD_GRAVITY);
+        let ball = add(&mut world, thrown_ball());
         for _ in 0..600 {
-            world.step(DT, &[]);
+            world.step(DT);
         }
-        assert!(
-            world.bodies[0].motion.position.z > 100.0,
-            "fell through: no ground"
-        );
+        let z = get(&world, ball).motion.position.z;
+        assert!(z > 100.0, "fell through: no ground");
     }
 
     #[test]
     fn a_raised_ground_holds_bodies_at_its_elevation() {
-        let mut world = world(vec![ground(10.0), thrown_ball()], STANDARD_GRAVITY);
+        let mut world = World::new(STANDARD_GRAVITY);
+        add(&mut world, ground(10.0));
+        let ball = add(&mut world, thrown_ball());
         for _ in 0..600 {
-            world.step(DT, &[]);
+            world.step(DT);
         }
-        let altitude = -world.bodies[1].motion.position.z;
+        let altitude = -get(&world, ball).motion.position.z;
         assert_eq!(altitude, 10.0 + RADIUS);
     }
 
@@ -618,14 +667,18 @@ mod tests {
         // No gravity: a ball slides east at 2 m/s into a static sphere of
         // 1 m radius, 5 m east. It stops touching it (centres 1.4 m apart),
         // its eastward speed cancelled.
-        let ball = Body {
-            motion: Motion {
-                position: DVec3::ZERO,
-                velocity: DVec3::new(0.0, 2.0, 0.0),
+        let mut world = World::new(DVec3::ZERO);
+        let ball = add(
+            &mut world,
+            Body {
+                motion: Motion {
+                    position: DVec3::ZERO,
+                    velocity: DVec3::new(0.0, 2.0, 0.0),
+                },
+                ..thrown_ball()
             },
-            ..thrown_ball()
-        };
-        let rock = Body {
+        );
+        let rock_body = Body {
             body_type: BodyType::Static,
             motion: Motion {
                 position: DVec3::new(0.0, 5.0, 0.0),
@@ -633,26 +686,28 @@ mod tests {
             },
             collider: BIG_SPHERE,
         };
-        let mut world = world(vec![ball, rock], DVec3::ZERO);
+        let rock = add(&mut world, rock_body);
         for _ in 0..(5 * 120) {
-            world.step(DT, &[]);
+            world.step(DT);
         }
-        let ball = world.bodies[0].motion;
+        let ball = get(&world, ball).motion;
         assert!((ball.position.y - (5.0 - 1.0 - RADIUS)).abs() < PUSH_TOLERANCE);
         assert!(ball.velocity.y.abs() < PUSH_TOLERANCE);
-        assert_eq!(world.bodies[1], rock);
+        assert_eq!(get(&world, rock), rock_body);
     }
 
     #[test]
     fn a_moving_half_space_is_rejected() {
         let mut falling_ground = ground(0.0);
         falling_ground.body_type = BodyType::Dynamic { mass: 1.0 };
-        let error = World::new(vec![thrown_ball(), falling_ground], STANDARD_GRAVITY);
-        assert_eq!(error, Err(WorldError::MustBeStatic { body: 1 }));
+        let mut world = World::new(STANDARD_GRAVITY);
+        let error = world.insert(falling_ground);
+        assert_eq!(error, Err(WorldError::MustBeStatic));
         assert_eq!(
             error.unwrap_err().to_string(),
-            "body 1 is dynamic, but its collider can only be static"
+            "a dynamic body's collider can only be static"
         );
+        assert_eq!(world, World::new(STANDARD_GRAVITY), "not added");
     }
 
     #[test]
@@ -662,13 +717,26 @@ mod tests {
                 body_type: BodyType::Dynamic { mass },
                 ..thrown_ball()
             };
-            let error = World::new(vec![ground(0.0), weightless], STANDARD_GRAVITY);
-            assert_eq!(error, Err(WorldError::InvalidMass { body: 1 }), "{mass}");
+            let error = World::new(STANDARD_GRAVITY).insert(weightless);
+            assert_eq!(error, Err(WorldError::InvalidMass), "{mass}");
         }
         assert_eq!(
-            WorldError::InvalidMass { body: 1 }.to_string(),
-            "body 1 is dynamic, but its mass isn't positive"
+            WorldError::InvalidMass.to_string(),
+            "a dynamic body's mass isn't positive"
         );
+    }
+
+    #[test]
+    fn a_body_of_another_world_is_not_found_nor_pushed() {
+        let mut big = World::new(DVec3::ZERO);
+        add(&mut big, thrown_ball());
+        let second = add(&mut big, thrown_ball());
+        let mut small = World::new(DVec3::ZERO);
+        let only = add(&mut small, floating(1.0));
+        assert_eq!(small.body(second), None);
+        small.add_force(second, DVec3::new(1.0, 0.0, 0.0)); // ignored
+        small.step(DT);
+        assert_eq!(get(&small, only), floating(1.0));
     }
 
     /// A ball of `mass` kg at rest at the origin, with no gravity.
@@ -688,13 +756,14 @@ mod tests {
         // 2 N on 4 kg: 0.5 m/s² north. Exact solution: v = a t,
         // x = a t²/2. Semi-implicit Euler gets v exactly, and x with its
         // known first-order error, a·t·dt/2 (see the free-fall test).
-        let mut world = world(vec![floating(4.0)], DVec3::ZERO);
-        let push = [DVec3::new(2.0, 0.0, 0.0)];
+        let mut world = World::new(DVec3::ZERO);
+        let ball = add(&mut world, floating(4.0));
         for _ in 0..120 {
-            world.step(DT, &push);
+            world.add_force(ball, DVec3::new(2.0, 0.0, 0.0)); // every step
+            world.step(DT);
         }
         let (a, t) = (0.5, 1.0);
-        let motion = world.bodies[0].motion;
+        let motion = get(&world, ball).motion;
         assert!((motion.velocity.x - a * t).abs() < 1e-12);
         let euler_error = 0.5 * a * t * DT;
         assert!((motion.position.x - (0.5 * a * t * t + euler_error)).abs() < 1e-12);
@@ -702,32 +771,50 @@ mod tests {
 
     #[test]
     fn the_same_force_moves_a_heavier_body_less() {
-        let mut world = world(vec![floating(1.0), floating(2.0)], DVec3::ZERO);
-        let push = DVec3::new(0.0, 3.0, 0.0);
-        world.step(DT, &[push, push]);
-        let speed = |i: usize| world.bodies[i].motion.velocity.y;
-        assert!((speed(0) - 2.0 * speed(1)).abs() < 1e-12);
+        let mut world = World::new(DVec3::ZERO);
+        let light = add(&mut world, floating(1.0));
+        let heavy = add(&mut world, floating(2.0));
+        for body in [light, heavy] {
+            world.add_force(body, DVec3::new(0.0, 3.0, 0.0));
+        }
+        world.step(DT);
+        let speed = |body| get(&world, body).motion.velocity.y;
+        assert!((speed(light) - 2.0 * speed(heavy)).abs() < 1e-12);
     }
 
     #[test]
     fn a_force_acts_only_during_the_step_it_is_given_for() {
         // Pushed for one step, then coasting: its speed stays what that
         // one push gave it (no gravity, nothing else).
-        let mut world = world(vec![floating(1.0)], DVec3::ZERO);
-        world.step(DT, &[DVec3::new(10.0, 0.0, 0.0)]);
-        let after_push = world.bodies[0].motion.velocity;
+        let mut world = World::new(DVec3::ZERO);
+        let ball = add(&mut world, floating(1.0));
+        world.add_force(ball, DVec3::new(10.0, 0.0, 0.0));
+        world.step(DT);
+        let after_push = get(&world, ball).motion.velocity;
         assert_eq!(after_push, DVec3::new(10.0 * DT, 0.0, 0.0));
         for _ in 0..10 {
-            world.step(DT, &[]);
+            world.step(DT);
         }
-        assert_eq!(world.bodies[0].motion.velocity, after_push);
+        assert_eq!(get(&world, ball).motion.velocity, after_push);
+    }
+
+    #[test]
+    fn forces_add_up() {
+        let mut world = World::new(DVec3::ZERO);
+        let ball = add(&mut world, floating(1.0));
+        world.add_force(ball, DVec3::new(32.0, 0.0, 0.0));
+        world.add_force(ball, DVec3::new(32.0, 0.0, 0.0));
+        world.step(1.0 / 64.0);
+        assert_eq!(get(&world, ball).motion.velocity.x, 1.0); // 64 N for 1/64 s
     }
 
     #[test]
     fn forces_do_not_move_static_bodies() {
-        let mut world = world(vec![ground(0.0)], STANDARD_GRAVITY);
-        world.step(DT, &[DVec3::new(1e6, 1e6, 1e6)]);
-        assert_eq!(world.bodies, [ground(0.0)]);
+        let mut world = World::new(STANDARD_GRAVITY);
+        let floor = add(&mut world, ground(0.0));
+        world.add_force(floor, DVec3::new(1e6, 1e6, 1e6));
+        world.step(DT);
+        assert_eq!(get(&world, floor), ground(0.0));
     }
 
     #[test]
@@ -741,98 +828,118 @@ mod tests {
         // Not even with a velocity, under gravity: static means static.
         let mut moving_ground = ground(0.0);
         moving_ground.motion.velocity = DVec3::new(1.0, 2.0, 3.0);
-        let mut world = world(vec![moving_ground], STANDARD_GRAVITY);
+        let mut world = World::new(STANDARD_GRAVITY);
+        let floor = add(&mut world, moving_ground);
         for _ in 0..120 {
-            world.step(DT, &[]);
+            world.step(DT);
         }
-        assert_eq!(world.bodies, [moving_ground]);
+        assert_eq!(get(&world, floor), moving_ground);
     }
 
     #[test]
     fn every_static_ground_applies() {
         // Two grounds: the higher one wins, as the ball lands on it first.
-        let bodies = vec![ground(0.0), thrown_ball(), ground(5.0)];
-        let mut world = world(bodies, STANDARD_GRAVITY);
+        let mut world = World::new(STANDARD_GRAVITY);
+        add(&mut world, ground(0.0));
+        let ball = add(&mut world, thrown_ball());
+        add(&mut world, ground(5.0));
         for _ in 0..600 {
-            world.step(DT, &[]);
+            world.step(DT);
         }
-        assert_eq!(-world.bodies[1].motion.position.z, 5.0 + RADIUS);
+        assert_eq!(-get(&world, ball).motion.position.z, 5.0 + RADIUS);
     }
 
     #[test]
     fn gravity_is_a_setting_of_the_world() {
         // Rapier and Box2D make gravity a world parameter too: the engine
         // assumes no planet. Without gravity, a thrown ball flies straight.
-        let mut world = world(vec![thrown_ball(), ground(0.0)], DVec3::ZERO);
+        let mut world = World::new(DVec3::ZERO);
+        let ball = add(&mut world, thrown_ball());
+        add(&mut world, ground(0.0));
         for _ in 0..120 {
-            world.step(DT, &[]);
+            world.step(DT);
         }
-        assert_eq!(world.bodies[0].motion.velocity, DVec3::new(5.0, 0.0, 0.0));
+        assert_eq!(get(&world, ball).motion.velocity, DVec3::new(5.0, 0.0, 0.0));
         let expected = DVec3::new(5.0, 0.0, -20.0);
-        assert!((world.bodies[0].motion.position - expected).length() < 1e-9);
+        assert!((get(&world, ball).motion.position - expected).length() < 1e-9);
 
         // Gravity can point anywhere: westwards, it bends the path west.
         world.gravity = DVec3::new(0.0, -2.0, 0.0);
-        world.step(1.0, &[]);
-        assert_eq!(world.bodies[0].motion.velocity, DVec3::new(5.0, -2.0, 0.0));
+        world.step(1.0);
+        assert_eq!(
+            get(&world, ball).motion.velocity,
+            DVec3::new(5.0, -2.0, 0.0)
+        );
     }
 
     #[test]
-    fn world_starts_at_time_zero_with_its_bodies() {
-        let bodies = vec![ground(0.0), thrown_ball(), resting_ball(5.0, 1.0)];
-        let world = world(bodies.clone(), STANDARD_GRAVITY);
+    fn a_world_starts_at_time_zero_and_finds_each_body_by_its_id() {
+        let mut world = World::new(STANDARD_GRAVITY);
+        let floor = add(&mut world, ground(0.0));
+        let thrown = add(&mut world, thrown_ball());
         assert_eq!(world.time(), 0.0);
-        assert_eq!(world.bodies, bodies);
+        assert_ne!(floor, thrown);
+        assert_eq!(get(&world, floor), ground(0.0));
+        assert_eq!(get(&world, thrown), thrown_ball());
     }
 
     #[test]
     fn ball_lands_at_the_free_fall_time_and_stays_on_the_ground() {
         // Its centre falls h = 20 m - radius, which takes t = sqrt(2h/g).
         let impact = (2.0 * (20.0 - RADIUS) / G).sqrt();
-        let mut world = world(vec![thrown_ball(), ground(0.0)], STANDARD_GRAVITY);
-        let altitude = |world: &World| -world.bodies[0].motion.position.z;
+        let mut world = World::new(STANDARD_GRAVITY);
+        let ball = add(&mut world, thrown_ball());
+        add(&mut world, ground(0.0));
+        let altitude = |world: &World| -get(world, ball).motion.position.z;
 
         while world.time() < impact - 2.0 * DT {
-            world.step(DT, &[]);
+            world.step(DT);
         }
         assert!(altitude(&world) > RADIUS, "landed too early");
 
         while world.time() < impact + 2.0 * DT {
-            world.step(DT, &[]);
+            world.step(DT);
         }
         assert_eq!(altitude(&world), RADIUS, "not landed in time");
-        assert_eq!(world.bodies[0].motion.velocity.z, 0.0);
+        assert_eq!(get(&world, ball).motion.velocity.z, 0.0);
 
         for _ in 0..600 {
-            world.step(DT, &[]); // 5 more seconds: it must not sink or bounce
+            world.step(DT); // 5 more seconds: it must not sink or bounce
         }
         assert_eq!(altitude(&world), RADIUS);
     }
 
     #[test]
     fn every_body_is_simulated_with_its_own_collider() {
-        let bodies = vec![thrown_ball(), resting_ball(5.0, 1.0), ground(0.0)];
-        let mut world = world(bodies, STANDARD_GRAVITY);
+        let mut world = World::new(STANDARD_GRAVITY);
+        let thrown = add(&mut world, thrown_ball());
+        let resting = add(&mut world, resting_ball(5.0, 1.0));
+        add(&mut world, ground(0.0));
         for _ in 0..120 {
-            world.step(DT, &[]);
+            world.step(DT);
         }
         // The thrown ball fell; the big one, resting on its 1 m radius,
         // stayed put. (They pass through each other: only static grounds
         // stop bodies so far.)
-        assert!(world.bodies[0].motion.position.z > -20.0);
-        assert_eq!(world.bodies[1], resting_ball(5.0, 1.0));
+        assert!(get(&world, thrown).motion.position.z > -20.0);
+        assert_eq!(get(&world, resting), resting_ball(5.0, 1.0));
     }
 
     #[test]
     fn simulation_is_deterministic() {
         // Two worlds fed the same steps must be bit-identical (assert_eq!,
         // not a tolerance). Replays in step 10 rely on this.
-        let bodies = vec![ground(0.0), thrown_ball(), resting_ball(5.0, 1.0)];
-        let mut a = world(bodies.clone(), STANDARD_GRAVITY);
-        let mut b = world(bodies, STANDARD_GRAVITY);
+        let build = || {
+            let mut world = World::new(STANDARD_GRAVITY);
+            for body in [ground(0.0), thrown_ball(), resting_ball(5.0, 1.0)] {
+                add(&mut world, body);
+            }
+            world
+        };
+        let (mut a, mut b) = (build(), build());
         for _ in 0..1000 {
-            a.step(DT, &[]);
-            b.step(DT, &[]);
+            a.step(DT);
+            b.step(DT);
         }
         assert_eq!(a, b);
     }

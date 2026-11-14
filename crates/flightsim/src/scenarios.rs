@@ -1,10 +1,11 @@
 //! The game's scenarios: what exists in the world and what it looks like,
-//! as engine `Scene`s. Positions and velocities are NED (x north, y east,
-//! z down): altitude is -z, and "up" velocities are negative.
+//! spawned into an engine `Scene`. Positions and velocities are NED (x
+//! north, y east, z down): altitude is -z, and "up" velocities are
+//! negative.
 
 use engine::{
-    Body, BodyType, Collider, Color, DVec3, Material, Motion, PlaneSize, STANDARD_GRAVITY, Scene,
-    SceneObject, Shape, TextureId, TiledTexture, Visual,
+    Body, BodyType, Collider, Color, DVec3, EntityId, Material, Motion, PlaneSize,
+    STANDARD_GRAVITY, Scene, SceneObject, Shape, TextureId, TiledTexture, Visual,
 };
 
 use crate::textures::{self, GridColors};
@@ -16,41 +17,33 @@ const GROUND_ELEVATION: f64 = 0.0;
 const GRID_SPACING: f64 = 2.0;
 const GRID_CELLS: u32 = 5;
 
-/// The scene's textures, by index (`TextureId`).
-const GRID_TEXTURE: TextureId = TextureId(0);
-
-/// The ball the player pushes, in `rolling_ball`: its index in the scene's
-/// objects (and so of its body in the world).
-// TODO(step-11): a reference to an entity instead of an index.
-pub(crate) const BALL: usize = 1;
-
 /// The ball's size and mass: about a football's size, a bit heavier.
 const BALL_RADIUS: f64 = 0.4;
 const BALL_MASS: f64 = 1.0;
 
-/// A ball resting on flat ground at sea level, for the player to push.
+/// Spawns a ball resting on flat ground at sea level, for the player to
+/// push, and returns the ball's ID.
 // TODO(step-09): scenarios become data files, like the aircraft.
-pub(crate) fn rolling_ball() -> Scene {
-    Scene {
-        objects: vec![ground(), ball()],
-        textures: vec![textures::grid_tile(
-            GRID_CELLS,
-            // Linear light: a very dark green-grey, lines in greys.
-            GridColors {
-                ground: Color::rgb(0.01, 0.012, 0.01),
-                minor: Color::rgb(0.08, 0.08, 0.08),
-                major: Color::rgb(0.5, 0.5, 0.5),
-            },
-        )],
-        // Linear light: tiny values for a dark night blue.
-        background: Color::rgb(0.006, 0.008, 0.015),
-        gravity: STANDARD_GRAVITY,
-    }
+pub(crate) fn rolling_ball(scene: &mut Scene) -> EntityId {
+    // Linear light: tiny values for a dark night blue.
+    scene.background = Color::rgb(0.006, 0.008, 0.015);
+    scene.gravity = STANDARD_GRAVITY;
+    let grid = scene.add_texture(textures::grid_tile(
+        GRID_CELLS,
+        // Linear light: a very dark green-grey, lines in greys.
+        GridColors {
+            ground: Color::rgb(0.01, 0.012, 0.01),
+            minor: Color::rgb(0.08, 0.08, 0.08),
+            major: Color::rgb(0.5, 0.5, 0.5),
+        },
+    ));
+    scene.spawn(ground(grid));
+    scene.spawn(ball())
 }
 
 /// The ground: an endless static plane at `GROUND_ELEVATION`, drawn
-/// endless too, covered with the grid texture (one tile per major cell).
-fn ground() -> SceneObject {
+/// endless too, covered with `grid` (one tile per major cell).
+fn ground(grid: TextureId) -> SceneObject {
     SceneObject {
         body: Body {
             body_type: BodyType::Static,
@@ -65,7 +58,7 @@ fn ground() -> SceneObject {
             material: Material {
                 color: Color::rgb(1.0, 1.0, 1.0), // the texture as it is
                 texture: Some(TiledTexture {
-                    texture: GRID_TEXTURE,
+                    texture: grid,
                     tile_size: GRID_SPACING * f64::from(GRID_CELLS),
                 }),
             },
@@ -100,51 +93,52 @@ fn ball() -> SceneObject {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_ball_rests_on_the_endless_ground() {
-        let scene = rolling_ball();
-        let [ground, ball] = scene.objects[..] else {
-            panic!("a ground and a ball");
+    /// A texture ID for the ground to refer to.
+    fn some_texture() -> TextureId {
+        let black = Color::rgb(0.0, 0.0, 0.0);
+        let colors = GridColors {
+            ground: black,
+            minor: black,
+            major: black,
         };
-        // z is down: the ball's centre is its radius above the ground.
-        assert_eq!(ground.body.motion.position.z, -GROUND_ELEVATION);
-        let ball = ball.body;
-        assert_eq!(ball.motion.position.z, -GROUND_ELEVATION - BALL_RADIUS);
-        assert_eq!(ball.motion.velocity, DVec3::ZERO);
-        assert_eq!(scene.objects[BALL].body, ball);
+        Scene::default().add_texture(textures::grid_tile(1, colors))
     }
 
     #[test]
-    fn the_player_pushes_a_moving_ball() {
-        let ball = rolling_ball().objects[BALL].body;
+    fn the_ball_rests_on_the_ground_and_can_be_pushed() {
+        // z is down: the ball's centre is its radius above the ground.
+        let ball = ball().body;
+        let ground = ground(some_texture()).body;
+        assert_eq!(
+            ball.motion.position.z,
+            ground.motion.position.z - BALL_RADIUS
+        );
+        assert_eq!(ball.motion.velocity, DVec3::ZERO);
         assert_eq!(ball.body_type, BodyType::Dynamic { mass: BALL_MASS });
     }
 
     #[test]
     fn what_you_see_is_what_collides() {
-        let scene = rolling_ball();
         // The ball: a sphere of its collider's size, at render precision
         // (0.4 isn't exact in binary: compare in f32, what the GPU gets).
-        let ball = scene.objects[BALL];
+        let ball = ball();
         let radius = BALL_RADIUS as f32;
-        assert_eq!(
-            ball.body.collider,
-            Collider::Sphere {
-                radius: BALL_RADIUS
-            }
-        );
+        let collider = Collider::Sphere {
+            radius: BALL_RADIUS,
+        };
+        assert_eq!(ball.body.collider, collider);
         assert_eq!(ball.visual.shape, Shape::Sphere { radius });
         // The ground's collider is endless: so is what's drawn.
-        let ground = scene.objects[0];
+        let ground = ground(some_texture());
         assert_eq!(ground.body.collider, Collider::HalfSpace);
         assert_eq!(ground.visual.shape, Shape::Plane(PlaneSize::Endless));
     }
 
     #[test]
-    fn the_ground_texture_exists_and_repeats_every_major_cell() {
-        let scene = rolling_ball();
-        let tiled = scene.objects[0].visual.material.texture.expect("a texture");
-        assert!(tiled.texture.0 < scene.textures.len());
+    fn the_ground_is_covered_with_its_grid_every_major_cell() {
+        let grid = some_texture();
+        let tiled = ground(grid).visual.material.texture.expect("a texture");
+        assert_eq!(tiled.texture, grid);
         // 5 cells of 2 m per tile: major lines every 10 m.
         assert_eq!(tiled.tile_size, 10.0);
     }

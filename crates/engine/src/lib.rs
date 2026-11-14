@@ -21,6 +21,7 @@
 //! real public API (enforced by the `unreachable_pub` lint).
 
 mod engine;
+mod headless;
 mod hud;
 mod input;
 mod mesh;
@@ -33,11 +34,14 @@ mod texture;
 mod timestep;
 
 // For games: what they implement, the content they describe (including the
-// physics types their objects are made of), the input they bind.
-pub use engine::Game;
+// physics types their objects are made of) and the IDs they're handed for
+// it, the input they bind, and a headless engine to run them in tests
+// (as Bevy apps run without render plugins, Godot with `--headless`).
+pub use engine::{Flow, Game};
+pub use headless::Headless;
 pub use input::{Command, InputEvent, Key, MouseButton};
-pub use render::{Color, Material, PlaneSize, Shape, TextureId, TiledTexture, View, Visual};
-pub use scene::{Scene, SceneObject};
+pub use render::{Color, Material, PlaneSize, Shape, TiledTexture, View, Visual};
+pub use scene::{EntityId, Scene, SceneObject, TextureId};
 pub use simulation::{Forces, WorldView};
 pub use texture::Texture;
 
@@ -57,7 +61,7 @@ pub use physics::{Body, BodyType, Collider, DVec2, DVec3, Motion, STANDARD_GRAVI
 /// `pub` for the platform crate to use them; a separate namespace keeps
 /// them out of the games' API (CI checks the game never imports it).
 pub mod platform {
-    pub use crate::engine::{Engine, Flow};
+    pub use crate::engine::Engine;
     pub use crate::input::RawInput;
     pub use crate::render::{GpuTexture, Mesh, ProxyId, RenderBackend, Screen, VIEW_DISTANCE};
 }

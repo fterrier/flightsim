@@ -17,11 +17,12 @@
 //!   the camera sends. Tests run it against a fake backend that records
 //!   calls (the idea behind Unreal's "null RHI").
 
+use arena::SecondaryMap;
 use glam::{Vec2, Vec3};
 use physics::DVec3;
 
 use crate::mesh;
-use crate::scene::Scene;
+use crate::scene::{EntityId, Scene, TextureId};
 use crate::simulation::WorldView;
 use crate::texture::Texture;
 
@@ -93,11 +94,6 @@ pub struct TiledTexture {
     pub tile_size: f64,
 }
 
-/// A texture of a scene: its index in `Scene::textures`. Several objects
-/// can share one texture, uploaded once (like a Bevy `Handle<Image>`).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct TextureId(pub usize);
-
 /// What an object looks like: data, not code. Engines call this a mesh +
 /// material (Unity's MeshRenderer, Godot's MeshInstance, Bevy's `Mesh3d`
 /// + `MeshMaterial3d` components). The physics never sees it.
@@ -121,13 +117,18 @@ pub struct View {
 /// endless wherever you are.
 pub const VIEW_DISTANCE: f32 = 5000.0;
 
-/// A handle to a render proxy owned by the backend (like Godot's `RID`).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ProxyId(pub usize);
+arena::id_type! {
+    /// Identifies a render proxy: handed out by the backend's
+    /// `create_mesh`, which stores it (like Godot's `RID` from
+    /// `RenderingServer`). Backends keep their proxies in an `arena::Arena`.
+    pub struct ProxyId;
+}
 
-/// A texture uploaded to the backend (like Godot's texture `RID`).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct GpuTexture(pub usize);
+arena::id_type! {
+    /// Identifies a texture uploaded to the backend: handed out by its
+    /// `create_texture` (like Godot's texture `RID`).
+    pub struct GpuTexture;
+}
 
 /// A triangle mesh, in render axes (f32 metres, x east, y up, z south),
 /// around its proxy's position: what GPUs draw.
@@ -198,11 +199,10 @@ enum Placement {
 /// view the game chose. (How the camera moves is the game's business, as
 /// in engines; the HUD is a separate overlay, see `hud`.)
 pub(crate) struct Renderer {
-    /// One render proxy per scene object, in scene order: proxy `i` shows
-    /// body `i`.
-    // TODO(step-11): keyed by entity ID instead of index; created when an
-    // entity spawns, freed when it despawns (like Godot's `free_rid`).
-    proxies: Vec<(ProxyId, Placement)>,
+    /// Each entity's render proxy, and where it goes each frame.
+    // TODO(step-11): created when an entity spawns, freed when it despawns
+    // (like Godot's `free_rid`).
+    proxies: SecondaryMap<EntityId, (ProxyId, Placement)>,
 }
 
 impl Renderer {
@@ -211,44 +211,36 @@ impl Renderer {
     pub(crate) fn new(backend: &mut impl RenderBackend, scene: &Scene) -> Self {
         backend.set_background(scene.background);
         backend.set_sun(to_render(SUN_DIRECTION.normalize()));
-        let textures: Vec<GpuTexture> = scene
-            .textures
-            .iter()
-            .map(|texture| backend.create_texture(texture))
-            .collect();
-        let proxies = scene
-            .objects
-            .iter()
-            .enumerate()
-            .map(|(index, object)| {
-                let Visual { shape, material } = object.visual;
-                let texture = material.texture.map(|tiled| {
-                    // TODO(step-09): scene validation reports this as an
-                    // error.
-                    let gpu = textures.get(tiled.texture.0).copied();
-                    gpu.unwrap_or_else(|| panic!("object {index}: no texture {}", tiled.texture.0))
-                });
-                // Without a texture, texture coordinates are unused: any
-                // tile size will do.
-                let tile = material.texture.map_or(1.0, |tiled| tiled.tile_size);
-                let (mesh, placement) = match shape {
-                    Shape::Sphere { radius } => {
-                        (mesh::sphere(radius, tile as f32), Placement::AtBody)
-                    }
-                    Shape::Plane(PlaneSize::Square { half_size }) => {
-                        (mesh::plane(half_size, tile as f32), Placement::AtBody)
-                    }
-                    Shape::Plane(PlaneSize::Endless) => (
-                        mesh::plane(VIEW_DISTANCE, tile as f32),
-                        Placement::UnderCamera { tile },
-                    ),
-                };
-                (
-                    backend.create_mesh(&mesh, material.color, texture),
-                    placement,
-                )
-            })
-            .collect();
+        // Each texture uploaded once, however many objects use it.
+        let mut textures = SecondaryMap::<TextureId, GpuTexture>::new();
+        for (id, texture) in scene.textures() {
+            textures.insert(id, backend.create_texture(texture));
+        }
+        let mut proxies = SecondaryMap::new();
+        for (entity, object) in scene.objects() {
+            let Visual { shape, material } = object.visual;
+            let texture = material.texture.map(|tiled| {
+                // A texture of another scene, or no longer there.
+                // TODO(step-09): scene validation reports this as an error.
+                let gpu = textures.get(tiled.texture).copied();
+                gpu.unwrap_or_else(|| panic!("object {entity:?}: no {:?}", tiled.texture))
+            });
+            // Without a texture, texture coordinates are unused: any tile
+            // size will do.
+            let tile = material.texture.map_or(1.0, |tiled| tiled.tile_size);
+            let (mesh, placement) = match shape {
+                Shape::Sphere { radius } => (mesh::sphere(radius, tile as f32), Placement::AtBody),
+                Shape::Plane(PlaneSize::Square { half_size }) => {
+                    (mesh::plane(half_size, tile as f32), Placement::AtBody)
+                }
+                Shape::Plane(PlaneSize::Endless) => (
+                    mesh::plane(VIEW_DISTANCE, tile as f32),
+                    Placement::UnderCamera { tile },
+                ),
+            };
+            let proxy = backend.create_mesh(&mesh, material.color, texture);
+            proxies.insert(entity, (proxy, placement));
+        }
         Self { proxies }
     }
 
@@ -265,15 +257,18 @@ impl Renderer {
         //  in one loop over all objects.
         //  TODO(step-08): orientations too (position + rotation).
         // ═══════════════════════════════════════════════════════════════
-        for ((proxy, placement), &position) in self.proxies.iter().zip(world.drawn) {
-            let position = match *placement {
+        for (entity, &(proxy, placement)) in self.proxies.iter() {
+            let Some(position) = world.drawn(entity) else {
+                continue; // no body: nothing moves it
+            };
+            let position = match placement {
                 Placement::AtBody => position,
                 Placement::UnderCamera { tile } => {
                     let under_eye = (view.eye.truncate() / tile).round() * tile;
                     under_eye.extend(position.z)
                 }
             };
-            backend.set_position(*proxy, to_render(position));
+            backend.set_position(proxy, to_render(position));
         }
     }
 }
@@ -297,26 +292,29 @@ fn to_render(ned: DVec3) -> Vec3 {
 #[cfg(test)]
 pub(crate) mod fakes {
     use super::*;
+    use arena::Arena;
 
-    /// A mesh proxy, as the backend was asked to create it.
+    /// A mesh proxy, as the backend was asked to create it, and where it
+    /// was last placed.
     #[derive(Debug, PartialEq)]
     pub(crate) struct Created {
         pub(crate) mesh: Mesh,
         pub(crate) color: Color,
         pub(crate) texture: Option<GpuTexture>,
+        pub(crate) position: Option<Vec3>,
     }
 
-    /// Records every call, so tests can check what was drawn.
+    /// Records every call, so tests can check what was drawn. Stores its
+    /// proxies and textures in arenas, handing out their IDs, as a real
+    /// backend does.
     pub(crate) struct RecordingBackend {
         pub(crate) screen: Screen,
         pub(crate) background: Option<Color>,
         pub(crate) sun: Option<Vec3>,
         /// Latest camera: eye and target.
         pub(crate) camera: Option<(Vec3, Vec3)>,
-        /// Uploaded textures.
-        pub(crate) textures: Vec<Texture>,
-        /// Created proxies, and their latest position.
-        pub(crate) proxies: Vec<(Created, Option<Vec3>)>,
+        pub(crate) textures: Arena<GpuTexture, Texture>,
+        pub(crate) proxies: Arena<ProxyId, Created>,
         /// Text, position, size.
         pub(crate) texts: Vec<(String, Vec2, f32)>,
     }
@@ -328,8 +326,8 @@ pub(crate) mod fakes {
                 background: None,
                 sun: None,
                 camera: None,
-                textures: Vec::new(),
-                proxies: Vec::new(),
+                textures: Arena::new(),
+                proxies: Arena::new(),
                 texts: Vec::new(),
             }
         }
@@ -349,8 +347,7 @@ pub(crate) mod fakes {
             self.camera = Some((eye, target));
         }
         fn create_texture(&mut self, texture: &Texture) -> GpuTexture {
-            self.textures.push(texture.clone());
-            GpuTexture(self.textures.len() - 1)
+            self.textures.insert(texture.clone())
         }
         fn create_mesh(
             &mut self,
@@ -358,44 +355,21 @@ pub(crate) mod fakes {
             color: Color,
             texture: Option<GpuTexture>,
         ) -> ProxyId {
-            let mesh = mesh.clone();
-            self.proxies.push((
-                Created {
-                    mesh,
-                    color,
-                    texture,
-                },
-                None,
-            ));
-            ProxyId(self.proxies.len() - 1)
+            self.proxies.insert(Created {
+                mesh: mesh.clone(),
+                color,
+                texture,
+                position: None,
+            })
         }
         fn set_position(&mut self, proxy: ProxyId, position: Vec3) {
-            self.proxies[proxy.0].1 = Some(position);
+            if let Some(created) = self.proxies.get_mut(proxy) {
+                created.position = Some(position);
+            }
         }
         fn screen_text(&mut self, text: &str, at: Vec2, size: f32, _color: Color) {
             self.texts.push((text.to_owned(), at, size));
         }
-    }
-
-    /// Ignores everything, like Unreal's "null RHI": lets the renderer's
-    /// logic run without any graphics, e.g. to measure its allocations.
-    pub(crate) struct NullBackend(pub(crate) Screen);
-
-    impl RenderBackend for NullBackend {
-        fn screen(&self) -> Screen {
-            self.0
-        }
-        fn set_background(&mut self, _color: Color) {}
-        fn set_sun(&mut self, _direction: Vec3) {}
-        fn set_camera(&mut self, _eye: Vec3, _target: Vec3) {}
-        fn create_texture(&mut self, _texture: &Texture) -> GpuTexture {
-            GpuTexture(0)
-        }
-        fn create_mesh(&mut self, _: &Mesh, _: Color, _: Option<GpuTexture>) -> ProxyId {
-            ProxyId(0)
-        }
-        fn set_position(&mut self, _proxy: ProxyId, _position: Vec3) {}
-        fn screen_text(&mut self, _text: &str, _at: Vec2, _size: f32, _color: Color) {}
     }
 }
 
@@ -405,18 +379,13 @@ mod tests {
     use super::*;
     use crate::scene::SceneObject;
     use crate::simulation::Simulation;
-    use physics::{Body, BodyType, Collider, Motion, STANDARD_GRAVITY};
+    use physics::{Body, BodyType, Collider, Motion};
 
     const BALL: Visual = Visual {
         shape: Shape::Sphere { radius: 0.4 },
         material: Material::plain(WHITE),
     };
     const BACKGROUND: Color = Color::rgb(0.1, 0.2, 0.3);
-    /// A 10 m tile of the scene's first texture.
-    const TILED: TiledTexture = TiledTexture {
-        texture: TextureId(0),
-        tile_size: 10.0,
-    };
 
     const SCREEN: Screen = Screen {
         width: 1000.0,
@@ -440,9 +409,9 @@ mod tests {
         }
     }
 
-    /// Endless flat ground at `elevation` metres, covered with the first
-    /// texture.
-    fn ground(elevation: f64) -> SceneObject {
+    /// Endless flat ground at `elevation` metres, covered with `texture`
+    /// every 10 m.
+    fn ground(elevation: f64, texture: TextureId) -> SceneObject {
         SceneObject {
             body: Body {
                 body_type: BodyType::Static,
@@ -456,7 +425,10 @@ mod tests {
                 shape: Shape::Plane(PlaneSize::Endless),
                 material: Material {
                     color: WHITE,
-                    texture: Some(TILED),
+                    texture: Some(TiledTexture {
+                        texture,
+                        tile_size: 10.0,
+                    }),
                 },
             },
         }
@@ -467,24 +439,28 @@ mod tests {
         Texture::from_fn(1, 1, |_, _| color)
     }
 
-    fn scene(objects: Vec<SceneObject>) -> Scene {
-        Scene {
-            objects,
-            textures: vec![texture(WHITE)],
-            background: BACKGROUND,
-            gravity: STANDARD_GRAVITY,
-        }
-    }
-
-    /// A ground at sea level, then a ball at the origin.
-    fn ball_on_the_ground() -> Scene {
-        scene(vec![ground(0.0), ball_at(0.0, 0.0)])
+    /// An empty scene with a sky colour and one white texture.
+    fn scene() -> (Scene, TextureId) {
+        let mut scene = Scene::default();
+        scene.background = BACKGROUND;
+        let white = scene.add_texture(texture(WHITE));
+        (scene, white)
     }
 
     /// The scene's simulation, and a renderer for it on `backend`.
     fn setup(scene: &Scene, backend: &mut RecordingBackend) -> (Simulation, Renderer) {
-        let sim = Simulation::new(scene.world().expect("a valid scene"), 1.0 / 64.0);
+        let sim = Simulation::load(scene, 1.0 / 64.0).expect("a valid scene");
         (sim, Renderer::new(backend, scene))
+    }
+
+    /// What the backend created for `entity`.
+    fn created<'a>(
+        backend: &'a RecordingBackend,
+        renderer: &Renderer,
+        entity: EntityId,
+    ) -> &'a Created {
+        let (proxy, _) = renderer.proxies.get(entity).expect("a proxy");
+        backend.proxies.get(*proxy).expect("created")
     }
 
     /// Looking at the origin from `eye`.
@@ -494,6 +470,8 @@ mod tests {
             target: DVec3::ZERO,
         }
     }
+
+    const ABOVE: DVec3 = DVec3::new(0.0, 0.0, -10.0);
 
     #[test]
     fn ned_axes_map_to_render_axes() {
@@ -512,8 +490,11 @@ mod tests {
 
     #[test]
     fn creates_one_proxy_per_object_with_background_and_sun() {
+        let (mut scene, white) = scene();
+        scene.spawn(ground(0.0, white));
+        scene.spawn(ball_at(0.0, 0.0));
         let mut backend = RecordingBackend::new(SCREEN);
-        setup(&ball_on_the_ground(), &mut backend);
+        setup(&scene, &mut backend);
         assert_eq!(backend.proxies.len(), 2);
         assert_eq!(backend.background, Some(BACKGROUND));
         let sun = backend.sun.expect("a sun is set");
@@ -523,88 +504,104 @@ mod tests {
 
     #[test]
     fn a_sphere_becomes_a_sphere_mesh_in_its_colour() {
+        let (mut scene, _) = scene();
+        let ball = scene.spawn(ball_at(0.0, 0.0));
         let mut backend = RecordingBackend::new(SCREEN);
-        setup(&ball_on_the_ground(), &mut backend);
+        let (_, renderer) = setup(&scene, &mut backend);
         let sphere = Created {
             mesh: mesh::sphere(0.4, 1.0),
             color: WHITE,
             texture: None,
+            position: None,
         };
-        assert_eq!(backend.proxies[1].0, sphere);
+        assert_eq!(*created(&backend, &renderer, ball), sphere);
     }
 
     #[test]
     fn a_textured_endless_plane_reaches_the_view_distance_tiled_by_its_texture() {
+        let (mut scene, white) = scene();
+        let floor = scene.spawn(ground(0.0, white));
         let mut backend = RecordingBackend::new(SCREEN);
-        setup(&ball_on_the_ground(), &mut backend);
-        let created = &backend.proxies[0].0;
-        assert_eq!(created.mesh, mesh::plane(VIEW_DISTANCE, 10.0));
-        assert_eq!(created.texture, Some(GpuTexture(0)));
+        let (_, renderer) = setup(&scene, &mut backend);
+        let plane = created(&backend, &renderer, floor);
+        assert_eq!(plane.mesh, mesh::plane(VIEW_DISTANCE, 10.0));
+        let uploaded = plane.texture.expect("a texture");
+        assert_eq!(backend.textures.get(uploaded), Some(&texture(WHITE)));
     }
 
     #[test]
-    fn a_square_plane_has_its_own_size() {
-        let mut square = ground(0.0);
+    fn a_square_plane_has_its_own_size_and_stays_at_its_body() {
+        let (mut scene, white) = scene();
+        let mut square = ground(0.0, white);
         square.visual.shape = Shape::Plane(PlaneSize::Square { half_size: 25.0 });
+        let square = scene.spawn(square);
         let mut backend = RecordingBackend::new(SCREEN);
-        let (sim, renderer) = setup(&scene(vec![square]), &mut backend);
-        assert_eq!(backend.proxies[0].0.mesh, mesh::plane(25.0, 10.0));
-        // A square stays where its body is, wherever the camera goes.
+        let (sim, renderer) = setup(&scene, &mut backend);
+        assert_eq!(
+            created(&backend, &renderer, square).mesh,
+            mesh::plane(25.0, 10.0)
+        );
+        // Wherever the camera goes.
         renderer.draw(
             &mut backend,
             sim.view(),
             from(DVec3::new(123.0, 45.0, -6.0)),
         );
-        assert_eq!(backend.proxies[0].1, Some(Vec3::ZERO));
+        assert_eq!(
+            created(&backend, &renderer, square).position,
+            Some(Vec3::ZERO)
+        );
     }
 
     #[test]
     fn each_texture_is_uploaded_once_however_many_objects_use_it() {
-        let mut scene = scene(vec![ground(0.0), ground(5.0)]);
-        scene.textures.push(texture(BACKGROUND));
+        let (mut scene, white) = scene();
+        scene.add_texture(texture(BACKGROUND)); // unused, uploaded anyway
+        let low = scene.spawn(ground(0.0, white));
+        let high = scene.spawn(ground(5.0, white));
         let mut backend = RecordingBackend::new(SCREEN);
-        setup(&scene, &mut backend);
-        assert_eq!(backend.textures, scene.textures);
-        let used = |i: usize| backend.proxies[i].0.texture;
-        assert_eq!(
-            (used(0), used(1)),
-            (Some(GpuTexture(0)), Some(GpuTexture(0)))
-        );
+        let (_, renderer) = setup(&scene, &mut backend);
+        assert_eq!(backend.textures.len(), 2);
+        let used = |entity| created(&backend, &renderer, entity).texture;
+        assert_eq!(used(low), used(high));
     }
 
     #[test]
-    #[should_panic(expected = "object 1: no texture 3")]
-    fn a_missing_texture_is_refused() {
-        let mut broken = ground(0.0);
-        broken.visual.material.texture = Some(TiledTexture {
-            texture: TextureId(3),
-            ..TILED
-        });
-        setup(
-            &scene(vec![ground(0.0), broken]),
-            &mut RecordingBackend::new(SCREEN),
-        );
+    #[should_panic(expected = "no TextureId(0v0)")]
+    fn a_texture_of_another_scene_is_refused() {
+        // `elsewhere` comes from another scene: this one has no textures.
+        let (_, elsewhere) = scene();
+        let mut scene = Scene::default();
+        scene.spawn(ground(0.0, elsewhere));
+        setup(&scene, &mut RecordingBackend::new(SCREEN));
     }
 
     #[test]
     fn each_ball_is_placed_where_its_body_is() {
-        let mut backend = RecordingBackend::new(SCREEN);
+        let (mut scene, white) = scene();
         // The ground in between, to check each proxy follows its own body.
-        let objects = vec![ball_at(1.0, 2.0), ground(0.0), ball_at(-3.0, 4.0)];
-        let (sim, renderer) = setup(&scene(objects), &mut backend);
-        renderer.draw(&mut backend, sim.view(), from(DVec3::new(0.0, 0.0, -10.0)));
+        let first = scene.spawn(ball_at(1.0, 2.0));
+        scene.spawn(ground(0.0, white));
+        let second = scene.spawn(ball_at(-3.0, 4.0));
+        let mut backend = RecordingBackend::new(SCREEN);
+        let (sim, renderer) = setup(&scene, &mut backend);
+        renderer.draw(&mut backend, sim.view(), from(ABOVE));
         // NED (north, east, -0.4) -> render (east, 0.4, -north).
-        assert_eq!(backend.proxies[0].1, Some(Vec3::new(2.0, 0.4, -1.0)));
-        assert_eq!(backend.proxies[2].1, Some(Vec3::new(4.0, 0.4, 3.0)));
+        let at = |entity| created(&backend, &renderer, entity).position;
+        assert_eq!(at(first), Some(Vec3::new(2.0, 0.4, -1.0)));
+        assert_eq!(at(second), Some(Vec3::new(4.0, 0.4, 3.0)));
     }
 
-    /// Where the endless ground of a scene with a ground `elevation` metres
-    /// up is drawn, seen from `eye`.
+    /// Where an endless ground `elevation` metres up is drawn, seen from
+    /// `eye`.
     fn ground_drawn_at(elevation: f64, eye: DVec3) -> Vec3 {
+        let (mut scene, white) = scene();
+        let floor = scene.spawn(ground(elevation, white));
         let mut backend = RecordingBackend::new(SCREEN);
-        let (sim, renderer) = setup(&scene(vec![ground(elevation)]), &mut backend);
+        let (sim, renderer) = setup(&scene, &mut backend);
         renderer.draw(&mut backend, sim.view(), from(eye));
-        backend.proxies[0].1.expect("the ground is placed")
+        let position = created(&backend, &renderer, floor).position;
+        position.expect("the ground is placed")
     }
 
     #[test]
@@ -643,22 +640,25 @@ mod tests {
     fn proxies_are_created_once_not_every_frame() {
         // Retained mode: the proxy lives across frames; only its position
         // is updated.
+        let (mut scene, _) = scene();
+        scene.spawn(ball_at(0.0, 0.0));
         let mut backend = RecordingBackend::new(SCREEN);
-        let (sim, renderer) = setup(&ball_on_the_ground(), &mut backend);
+        let (sim, renderer) = setup(&scene, &mut backend);
         for _ in 0..3 {
-            renderer.draw(&mut backend, sim.view(), from(DVec3::new(0.0, 0.0, -10.0)));
+            renderer.draw(&mut backend, sim.view(), from(ABOVE));
         }
-        assert_eq!(backend.proxies.len(), 2);
+        assert_eq!(backend.proxies.len(), 1);
     }
 
     #[test]
     fn the_view_is_sent_in_render_axes() {
+        let (scene, _) = scene();
         let mut backend = RecordingBackend::new(SCREEN);
         let view = View {
             eye: DVec3::new(10.0, -20.0, -30.0),
             target: DVec3::new(40.0, 12.0, -5.0),
         };
-        let (sim, renderer) = setup(&ball_on_the_ground(), &mut backend);
+        let (sim, renderer) = setup(&scene, &mut backend);
         renderer.draw(&mut backend, sim.view(), view);
         let camera = backend.camera.expect("a camera is set");
         assert_eq!(camera, (to_render(view.eye), to_render(view.target)));

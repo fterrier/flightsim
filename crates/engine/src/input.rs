@@ -74,8 +74,11 @@ pub enum InputEvent {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Command {
     Quit,
-    /// Reload the scene into a fresh simulation.
-    Restart,
+    /// Load the scene again from its description, everything back where
+    /// it started (Godot's `reload_current_scene`, Unity's `LoadScene` of
+    /// the current scene). When to do it ("press R to restart") is the
+    /// game's choice.
+    ReloadScene,
     /// Debug: make every frame 50 ms longer, like a slow machine.
     ToggleSlowFrames,
     /// Debug: make every frame 400 ms longer, beyond the frame-time cap.

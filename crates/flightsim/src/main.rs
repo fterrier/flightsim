@@ -11,5 +11,5 @@ mod scenarios;
 mod textures;
 
 fn main() {
-    engine_kiss3d::run("flightsim", game::FlightSim::new());
+    engine_kiss3d::run("flightsim", game::FlightSim::new);
 }

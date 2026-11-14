@@ -14,10 +14,11 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 
+use arena::Arena;
 use engine::platform::{
-    Engine, Flow, GpuTexture, Mesh, ProxyId, RawInput, RenderBackend, Screen, VIEW_DISTANCE,
+    Engine, GpuTexture, Mesh, ProxyId, RawInput, RenderBackend, Screen, VIEW_DISTANCE,
 };
-use engine::{Color, DVec2, Game, Key, MouseButton, Texture};
+use engine::{Color, DVec2, Flow, Game, Key, MouseButton, Scene, Texture};
 use glam::{Vec2, Vec3};
 use kiss3d::camera::OrbitCamera3d;
 use kiss3d::color::Color as Kiss3dColor;
@@ -29,18 +30,18 @@ use kiss3d::scene::SceneNode3d;
 use kiss3d::text::Font;
 use kiss3d::window::Window;
 
-/// Runs `game` in a window titled `title` until it quits or the window is
-/// closed.
-pub fn run(title: &str, game: impl Game) {
+/// Runs a game in a window titled `title` until it quits or the window is
+/// closed. `new_game` creates it, filling in its scene (see `Engine::new`).
+pub fn run<G: Game>(title: &str, new_game: impl FnOnce(&mut Scene) -> G) {
     // kiss3d's API is `async` so the same code can run in a browser, where
     // the browser owns the loop. On desktop we simply block on it: the
     // loop below really is ours, on the main thread.
-    kiss3d::pollster::block_on(run_async(title, game));
+    kiss3d::pollster::block_on(run_async(title, new_game));
 }
 
-async fn run_async(title: &str, game: impl Game) {
+async fn run_async<G: Game>(title: &str, new_game: impl FnOnce(&mut Scene) -> G) {
     let mut backend = Kiss3dBackend::new(title, 1280, 720).await;
-    let mut engine = Engine::new(&mut backend, game);
+    let mut engine = Engine::new(&mut backend, new_game);
     let mut last_frame: Option<Instant> = None;
 
     // The game loop: one iteration per displayed frame. `present` shows
@@ -78,10 +79,10 @@ struct Kiss3dBackend {
     /// Projects the world (render axes: y up) onto the screen, placed by
     /// `set_camera`.
     camera: OrbitCamera3d,
-    /// Render proxies, indexed by `ProxyId`.
-    proxies: Vec<SceneNode3d>,
-    /// Uploaded textures, indexed by `GpuTexture`.
-    textures: Vec<Arc<Kiss3dTexture>>,
+    /// Render proxies, by the IDs handed out for them.
+    proxies: Arena<ProxyId, SceneNode3d>,
+    /// Uploaded textures, by the IDs handed out for them.
+    textures: Arena<GpuTexture, Arc<Kiss3dTexture>>,
     font: Arc<Font>,
 }
 
@@ -109,8 +110,8 @@ impl Kiss3dBackend {
             window,
             scene: SceneNode3d::empty(),
             camera,
-            proxies: Vec::new(),
-            textures: Vec::new(),
+            proxies: Arena::new(),
+            textures: Arena::new(),
             font: Font::default(),
         }
     }
@@ -147,14 +148,16 @@ impl RenderBackend for Kiss3dBackend {
     }
 
     fn set_position(&mut self, proxy: ProxyId, position: Vec3) {
-        self.proxies[proxy.0].set_position(kiss3d_vec3(position));
+        if let Some(node) = self.proxies.get_mut(proxy) {
+            node.set_position(kiss3d_vec3(position));
+        }
     }
 
     fn create_texture(&mut self, texture: &Texture) -> GpuTexture {
         // Repeated, smoothly filtered, with mipmaps and 16x anisotropic
         // filtering: sharp up close, no shimmer far away or at grazing
         // angles.
-        self.textures.push(Kiss3dTexture::new(
+        self.textures.insert(Kiss3dTexture::new(
             texture.width,
             texture.height,
             &texture.srgba,
@@ -163,8 +166,7 @@ impl RenderBackend for Kiss3dBackend {
             wgpu::FilterMode::Linear,
             true,
             16,
-        ));
-        GpuTexture(self.textures.len() - 1)
+        ))
     }
 
     fn create_mesh(&mut self, mesh: &Mesh, color: Color, texture: Option<GpuTexture>) -> ProxyId {
@@ -179,11 +181,10 @@ impl RenderBackend for Kiss3dBackend {
             .scene
             .add_mesh(Rc::new(RefCell::new(gpu_mesh)), Kiss3dVec3::ONE);
         node.set_color(kiss3d_color(color));
-        if let Some(texture) = texture {
-            node.set_texture(self.textures[texture.0].clone());
+        if let Some(texture) = texture.and_then(|id| self.textures.get(id)) {
+            node.set_texture(texture.clone());
         }
-        self.proxies.push(node);
-        ProxyId(self.proxies.len() - 1)
+        self.proxies.insert(node)
     }
 
     fn screen_text(&mut self, text: &str, at: Vec2, size: f32, color: Color) {

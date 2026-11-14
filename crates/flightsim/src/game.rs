@@ -5,8 +5,8 @@
 use std::fmt::{self, Write};
 
 use engine::{
-    Body, Collider, Command, DVec2, Forces, Game, InputEvent, Key, MouseButton, Scene, View,
-    WorldView,
+    Body, Collider, Command, DVec2, EntityId, Forces, Game, InputEvent, Key, MouseButton, Scene,
+    View, WorldView,
 };
 
 use crate::camera::Camera;
@@ -16,24 +16,24 @@ use crate::scenarios;
 /// 1 kg ball.
 const PUSH_FORCE: f64 = 4.0;
 
-/// The game's own state: what it follows, its camera, which keys are held.
-/// Not the scene: that's built when the engine loads it, and the engine
-/// keeps what it needs (as engines load a level from its asset, the game
-/// doesn't hold a copy).
+/// The game's own state: the ball it plays with, its camera, which keys
+/// are held. Not the scene: the engine keeps that.
 pub(crate) struct FlightSim {
-    /// Index of the object (and body) the camera follows and the keys push.
-    focus: usize,
-    /// Follows the focus; the player turns, zooms and switches it.
+    /// The ball the camera follows and the keys push: the ID the scene
+    /// handed out when it was spawned.
+    ball: EntityId,
+    /// Follows the ball; the player turns, zooms and switches it.
     camera: Camera,
     /// Which movement keys are down.
     held: Held,
 }
 
 impl FlightSim {
-    pub(crate) fn new() -> Self {
+    /// The game, with its scenario spawned into `scene` (see `Engine::new`).
+    pub(crate) fn new(scene: &mut Scene) -> Self {
         Self {
-            focus: scenarios::BALL,
-            // Put on the focus when the scene loads (`scene_loaded`).
+            ball: scenarios::rolling_ball(scene),
+            // Put on the ball when the scene loads (`scene_loaded`).
             camera: Camera::new(),
             held: Held::default(),
         }
@@ -82,27 +82,22 @@ impl Game for FlightSim {
         1.0 / 120.0
     }
 
-    /// Built on demand and handed over: the engine calls it once, at load.
-    // TODO(step-09): loaded from the scenario's file instead.
-    fn scene(&self) -> Scene {
-        scenarios::rolling_ball()
-    }
-
     /// Everything may have jumped (a restart puts the ball back): the
-    /// camera jumps to the focus instead of gliding there.
+    /// camera jumps to the ball instead of gliding there.
     fn scene_loaded(&mut self, world: WorldView<'_>) {
-        let velocity = world.bodies[self.focus].motion.velocity;
-        self.camera.jump_to(world.drawn[self.focus], velocity);
+        if let (Some(drawn), Some(body)) = (world.drawn(self.ball), world.body(self.ball)) {
+            self.camera.jump_to(drawn, body.motion.velocity);
+        }
     }
 
     /// Pushes the ball where the held keys say, relative to the camera, as
     /// third-person games do: W away from the camera, D to its right.
-    fn fixed_update(&mut self, _bodies: &[Body], forces: &mut Forces<'_>) {
+    fn fixed_update(&mut self, _world: WorldView<'_>, forces: &mut Forces<'_>) {
         let keys = self.held.direction(); // (forward, right)
         let forward = self.camera.ground_forward(); // (north, east)
         let right = DVec2::new(-forward.y, forward.x); // a quarter turn clockwise
         let push = (forward * keys.x + right * keys.y) * PUSH_FORCE;
-        forces.add(self.focus, push.extend(0.0)); // horizontal: no vertical push
+        forces.add(self.ball, push.extend(0.0)); // horizontal: no vertical push
     }
 
     // TODO(step-06): flight controls (throttle, pitch).
@@ -114,7 +109,8 @@ impl Game for FlightSim {
                 None
             }
             InputEvent::KeyPressed(Key::Escape) => Some(Command::Quit),
-            InputEvent::KeyPressed(Key::R) => Some(Command::Restart),
+            // Restarting is reloading the scene: everything back at the start.
+            InputEvent::KeyPressed(Key::R) => Some(Command::ReloadScene),
             InputEvent::KeyPressed(Key::L) => Some(Command::ToggleSlowFrames),
             InputEvent::KeyPressed(Key::K) => Some(Command::ToggleStalledFrames),
             // The camera is the game's own: no engine command needed.
@@ -139,12 +135,12 @@ impl Game for FlightSim {
     }
 
     fn view(&mut self, world: WorldView<'_>, frame_time: f64) -> View {
-        // The camera glides towards where the focused object is drawn
-        // (interpolated), in real frame time; a chase camera also swings
-        // round according to its velocity.
-        let focus = self.focus;
-        let velocity = world.bodies[focus].motion.velocity;
-        self.camera.update(world.drawn[focus], velocity, frame_time);
+        // The camera glides towards where the ball is drawn (interpolated),
+        // in real frame time; a chase camera also swings round according to
+        // its velocity.
+        if let (Some(drawn), Some(body)) = (world.drawn(self.ball), world.body(self.ball)) {
+            self.camera.update(drawn, body.motion.velocity, frame_time);
+        }
         View {
             eye: self.camera.eye(),
             target: self.camera.target,
@@ -154,7 +150,9 @@ impl Game for FlightSim {
     fn write_hud(&self, world: WorldView<'_>, out: &mut String) -> fmt::Result {
         // The physics is NED (z down); the HUD speaks like a pilot: altitude
         // and climb rate are positive upwards.
-        let body = &world.bodies[self.focus];
+        let Some(body) = world.body(self.ball) else {
+            return Ok(()); // no ball, nothing to tell
+        };
         let (position, velocity) = (body.motion.position, body.motion.velocity);
         write!(
             out,
@@ -188,157 +186,152 @@ fn altitude(body: &Body) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::{BodyType, DVec3, Motion};
+    use engine::{BodyType, DVec3, Flow, Headless, Motion};
 
-    /// The game's world as its scene loads: bodies at their start, drawn
-    /// where they are.
-    struct StartWorld {
-        bodies: Vec<Body>,
-        drawn: Vec<DVec3>,
+    /// The game, run by the real engine without a window.
+    fn play() -> Headless<FlightSim> {
+        Headless::new(FlightSim::new)
     }
 
-    impl StartWorld {
-        fn new(game: &FlightSim) -> Self {
-            let bodies: Vec<Body> = game.scene().objects.iter().map(|o| o.body).collect();
-            let drawn = bodies.iter().map(|b| b.motion.position).collect();
-            Self { bodies, drawn }
-        }
-
-        fn view(&self) -> WorldView<'_> {
-            WorldView {
-                time: 0.0,
-                bodies: &self.bodies,
-                drawn: &self.drawn,
-            }
-        }
-    }
-
-    /// The game once the engine has loaded its scene and told it so.
-    fn loaded() -> FlightSim {
-        let mut game = FlightSim::new();
-        game.scene_loaded(StartWorld::new(&game).view());
-        game
-    }
-
-    /// The game's view for a frame of `frame_time` seconds.
-    fn look(game: &mut FlightSim, frame_time: f64) -> View {
-        let world = StartWorld::new(game);
-        game.view(world.view(), frame_time)
-    }
-
-    fn hud(game: &FlightSim) -> String {
-        let mut out = String::new();
-        game.write_hud(StartWorld::new(game).view(), &mut out)
-            .unwrap();
-        out
-    }
-
-    fn distance(view: View) -> f64 {
-        view.eye.distance(view.target)
-    }
-
-    /// The force the game puts on the ball in its next physics step.
-    fn push(game: &mut FlightSim) -> DVec3 {
-        let world = StartWorld::new(game);
-        let mut buffer = vec![DVec3::ZERO; world.bodies.len()];
-        game.fixed_update(&world.bodies, &mut Forces::new(&mut buffer));
-        buffer[scenarios::BALL]
-    }
-
-    fn press(game: &mut FlightSim, key: Key) -> Option<Command> {
+    fn press(game: &mut Headless<FlightSim>, key: Key) -> Flow {
         game.input(InputEvent::KeyPressed(key))
     }
 
-    fn release(game: &mut FlightSim, key: Key) -> Option<Command> {
+    fn release(game: &mut Headless<FlightSim>, key: Key) -> Flow {
         game.input(InputEvent::KeyReleased(key))
     }
 
-    /// Unit vectors (north, east, down) on the ground.
-    fn ground(north: f64, east: f64) -> DVec3 {
-        DVec3::new(north, east, 0.0).normalize()
+    /// Runs the game for `seconds`, at 60 frames per second.
+    fn run(game: &mut Headless<FlightSim>, seconds: f64) {
+        for _ in 0..(seconds * 60.0).round() as u32 {
+            game.frame(1.0 / 60.0);
+        }
     }
 
-    fn assert_close(actual: DVec3, expected: DVec3) {
+    /// The ball's physics state.
+    fn ball(game: &Headless<FlightSim>) -> Body {
+        *game.world().body(game.game().ball).expect("the ball")
+    }
+
+    /// The ball's velocity over the ground (north, east), in m/s.
+    fn rolling(game: &Headless<FlightSim>) -> DVec2 {
+        ball(game).motion.velocity.truncate()
+    }
+
+    fn hud(game: &Headless<FlightSim>) -> String {
+        let mut out = String::new();
+        game.game().write_hud(game.world(), &mut out).unwrap();
+        out
+    }
+
+    /// A unit vector (north, east).
+    fn heading(north: f64, east: f64) -> DVec2 {
+        DVec2::new(north, east).normalize()
+    }
+
+    fn assert_close(actual: DVec2, expected: DVec2) {
         assert!(
-            (actual - expected).length() < 1e-12,
+            (actual - expected).length() < 1e-9,
             "{actual} vs {expected}"
         );
     }
 
+    /// The ball's speed after one second of push, in m/s: `PUSH_FORCE`
+    /// (4 N) on the 1 kg ball is 4 m/s², so 4 m/s after 1 s. Exact with
+    /// semi-implicit Euler under a constant force (see the physics tests).
+    const ONE_SECOND_OF_PUSH: f64 = 4.0;
+
     #[test]
-    fn no_key_no_push() {
-        assert_eq!(push(&mut loaded()), DVec3::ZERO);
+    fn the_ball_rests_on_the_ground_at_first() {
+        let mut game = play();
+        run(&mut game, 1.0);
+        assert_eq!(rolling(&game), DVec2::ZERO);
+        assert_eq!(altitude(&ball(&game)), 0.0);
     }
 
     #[test]
     fn w_pushes_the_ball_away_from_the_camera() {
         // The camera starts south-west of the ball: away is north-east.
-        let mut game = loaded();
-        assert_eq!(press(&mut game, Key::W), None);
-        assert_close(push(&mut game), ground(1.0, 1.0) * PUSH_FORCE);
+        let mut game = play();
+        assert_eq!(press(&mut game, Key::W), Flow::Continue);
+        run(&mut game, 1.0);
+        assert_close(rolling(&game), heading(1.0, 1.0) * ONE_SECOND_OF_PUSH);
     }
 
     #[test]
     fn asd_push_towards_the_camera_and_to_its_sides() {
-        let mut game = loaded();
         for (key, north, east) in [
             (Key::S, -1.0, -1.0),
             (Key::A, 1.0, -1.0),
             (Key::D, -1.0, 1.0),
         ] {
+            let mut game = play();
             press(&mut game, key);
-            assert_close(push(&mut game), ground(north, east) * PUSH_FORCE);
-            release(&mut game, key);
+            run(&mut game, 1.0);
+            assert_close(rolling(&game), heading(north, east) * ONE_SECOND_OF_PUSH);
         }
     }
 
     #[test]
-    fn the_push_lasts_while_the_key_is_held() {
-        let mut game = loaded();
+    fn the_push_lasts_only_while_the_key_is_held() {
+        // Half a second of push, then it rolls on at what it gained (no
+        // friction yet).
+        let mut game = play();
         press(&mut game, Key::W);
-        for _ in 0..3 {
-            assert_ne!(push(&mut game), DVec3::ZERO, "every step");
-        }
-        assert_eq!(release(&mut game, Key::W), None);
-        assert_eq!(push(&mut game), DVec3::ZERO);
+        run(&mut game, 0.5);
+        assert_eq!(release(&mut game, Key::W), Flow::Continue);
+        run(&mut game, 0.5);
+        assert!((rolling(&game).length() - ONE_SECOND_OF_PUSH / 2.0).abs() < 1e-9);
     }
 
     #[test]
     fn two_keys_push_diagonally_no_harder_and_opposite_keys_cancel() {
-        let mut game = loaded();
+        let mut game = play();
         press(&mut game, Key::W);
         press(&mut game, Key::D);
-        assert!((push(&mut game).length() - PUSH_FORCE).abs() < 1e-12);
-        release(&mut game, Key::D);
+        run(&mut game, 1.0);
+        assert!((rolling(&game).length() - ONE_SECOND_OF_PUSH).abs() < 1e-9);
+
+        let mut game = play();
+        press(&mut game, Key::W);
         press(&mut game, Key::S);
-        assert_eq!(push(&mut game), DVec3::ZERO);
+        run(&mut game, 1.0);
+        assert_eq!(rolling(&game), DVec2::ZERO);
     }
 
     #[test]
     fn the_push_turns_with_the_camera() {
         // Dragged half a turn round: W now pushes south-west.
-        let mut game = loaded();
+        let mut game = play();
         game.input(InputEvent::MouseDragged {
             button: MouseButton::Left,
             delta: DVec2::new(std::f64::consts::PI / 0.005, 0.0),
         });
         press(&mut game, Key::W);
-        assert!((push(&mut game) - ground(-1.0, -1.0) * PUSH_FORCE).length() < 1e-9);
+        run(&mut game, 1.0);
+        assert!((rolling(&game) - heading(-1.0, -1.0) * ONE_SECOND_OF_PUSH).length() < 1e-6);
     }
 
     #[test]
-    fn plays_the_rolling_ball_scenario_at_120_hz() {
-        let game = FlightSim::new();
-        assert_eq!(game.scene(), scenarios::rolling_ball());
-        assert_eq!(game.physics_dt(), 1.0 / 120.0);
+    fn r_reloads_the_scene_ball_and_camera_back_at_the_start() {
+        let mut game = play();
+        let start = ball(&game);
+        press(&mut game, Key::C); // the player's camera choice stays
+        press(&mut game, Key::W);
+        run(&mut game, 1.0);
+        assert_eq!(press(&mut game, Key::R), Flow::Continue);
+        assert_eq!(ball(&game), start, "the same ball, back at the start");
+        assert_eq!(game.game().camera.target, start.motion.position);
+        assert!(hud(&game).contains("camera: chase"));
     }
 
     #[test]
     fn keys_ask_the_engine_for_its_services() {
-        let mut game = FlightSim::new();
+        // Straight to the game: what it asks of the engine.
+        let mut game = FlightSim::new(&mut Scene::default());
         let mut press = |key| game.input(InputEvent::KeyPressed(key));
         assert_eq!(press(Key::Escape), Some(Command::Quit));
-        assert_eq!(press(Key::R), Some(Command::Restart));
+        assert_eq!(press(Key::R), Some(Command::ReloadScene));
         assert_eq!(press(Key::L), Some(Command::ToggleSlowFrames));
         assert_eq!(press(Key::K), Some(Command::ToggleStalledFrames));
         assert_eq!(press(Key::Z), None);
@@ -346,79 +339,65 @@ mod tests {
     }
 
     #[test]
+    fn escape_quits() {
+        assert_eq!(press(&mut play(), Key::Escape), Flow::Quit);
+    }
+
+    #[test]
+    fn once_the_scene_is_loaded_the_camera_is_on_the_ball() {
+        let game = play();
+        assert_eq!(game.game().camera.target, ball(&game).motion.position);
+    }
+
+    #[test]
     fn c_switches_the_camera_mode_shown_on_the_hud() {
-        let mut game = FlightSim::new();
+        let mut game = play();
         assert!(hud(&game).contains("camera: orbit"));
-        assert_eq!(game.input(InputEvent::KeyPressed(Key::C)), None);
-        assert!(hud(&game).contains("camera: chase"));
-    }
-
-    #[test]
-    fn once_the_scene_is_loaded_the_camera_is_on_the_focused_ball() {
-        let mut game = loaded();
-        let ball = scenarios::rolling_ball().objects[scenarios::BALL].body;
-        assert_eq!(look(&mut game, 0.0).target, ball.motion.position);
-    }
-
-    #[test]
-    fn after_a_scene_load_the_camera_jumps_to_the_focus_in_the_same_mode() {
-        let mut game = loaded();
-        let mut world = StartWorld::new(&game);
-        game.input(InputEvent::KeyPressed(Key::C)); // the player's choice
-
-        // The ball is suddenly 1 km away (as after a restart, back at its
-        // start): no glide across the map, a jump.
-        world.drawn[scenarios::BALL] += DVec3::new(1000.0, 0.0, 0.0);
-        game.scene_loaded(world.view());
-        let view = game.view(world.view(), 1.0 / 60.0);
-        assert_eq!(view.target, world.drawn[scenarios::BALL]);
+        press(&mut game, Key::C);
         assert!(hud(&game).contains("camera: chase"));
     }
 
     #[test]
     fn dragging_with_the_left_button_turns_the_camera() {
-        let mut game = loaded();
-        let before = look(&mut game, 0.0);
+        let mut game = play();
+        let before = game.game().camera.eye();
         let drag = |button| InputEvent::MouseDragged {
             button,
             delta: DVec2::new(100.0, 0.0),
         };
-
-        assert_eq!(game.input(drag(MouseButton::Right)), None);
-        assert_eq!(look(&mut game, 0.0), before, "not the bound button");
-
-        assert_eq!(game.input(drag(MouseButton::Left)), None);
-        let after = look(&mut game, 0.0);
-        assert_ne!(after.eye, before.eye);
-        assert!((distance(after) - distance(before)).abs() < 1e-9);
+        game.input(drag(MouseButton::Right));
+        assert_eq!(game.game().camera.eye(), before, "not the bound button");
+        game.input(drag(MouseButton::Left));
+        let after = game.game().camera.eye();
+        assert_ne!(after, before);
+        let target = game.game().camera.target;
+        assert!((after.distance(target) - before.distance(target)).abs() < 1e-9);
     }
 
     #[test]
     fn scrolling_zooms_the_camera() {
-        let mut game = loaded();
-        let before = distance(look(&mut game, 0.0));
-        assert_eq!(game.input(InputEvent::Scroll(300.0)), None); // 2x closer
-        assert!((distance(look(&mut game, 0.0)) - before / 2.0).abs() < 1e-9);
+        let mut game = play();
+        let distance = |game: &Headless<FlightSim>| {
+            let camera = &game.game().camera;
+            camera.eye().distance(camera.target)
+        };
+        let before = distance(&game);
+        game.input(InputEvent::Scroll(300.0)); // one "doubling": 2x closer
+        assert!((distance(&game) - before / 2.0).abs() < 1e-9);
     }
 
     #[test]
     fn hud_describes_the_ball_in_flight_terms_and_the_keys() {
-        // At the start: at rest on the ground at the origin.
-        let out = hud(&FlightSim::new());
+        let mut game = play();
+        let out = hud(&game);
         assert!(out.contains("north = 0.0 m, east = 0.0 m"), "{out}");
         assert!(out.contains("ground speed = 0.0 m/s"), "{out}");
         assert!(out.contains("altitude = 0.0 m"), "{out}"); // bottom of the ball
         assert!(out.contains("WASD: push"), "{out}");
-
-        // Rolling 3 m/s north and 4 m/s east (5 m/s over the ground), and
-        // rising at 2 m/s (z is down).
-        let game = FlightSim::new();
-        let mut world = StartWorld::new(&game);
-        world.bodies[scenarios::BALL].motion.velocity = DVec3::new(3.0, 4.0, -2.0);
-        let mut out = String::new();
-        game.write_hud(world.view(), &mut out).unwrap();
-        assert!(out.contains("ground speed = 5.0 m/s"), "{out}");
-        assert!(out.contains("climb rate = 2.0 m/s"), "{out}");
+        press(&mut game, Key::W);
+        run(&mut game, 1.0);
+        let out = hud(&game);
+        assert!(out.contains("ground speed = 4.0 m/s"), "{out}");
     }
 
     #[test]

@@ -121,12 +121,12 @@ Rules:
    motion, collider) for the simulation and its `Visual` (shape +
    colour, later a glTF mesh + material) for the renderer. Only what
    exists nowhere in particular (background, gravity) is a scene
-   setting. Loading splits objects, keeping one index everywhere: object
-   `i` becomes physics body `i` and drawable `i` (stable entity IDs
-   replace the index at step 11, when objects can come and go). The
-   game loop never knows what's inside, and the render interface has a
-   few generic operations that never grow with content: no
-   `draw_plane`.
+   setting. The game *spawns* objects and adds textures, and is handed
+   an ID for each (as Bevy's `spawn` and `assets.add` do). Loading
+   splits objects: each entity gets a physics body and a render proxy,
+   all found by IDs (see "IDs" below). The game loop never knows what's
+   inside, and the render interface has a few generic operations that
+   never grow with content: no `draw_plane`.
 
 ## Decisions
 
@@ -221,6 +221,27 @@ is dominated by aerodynamic forces on one body with few contacts. The 6DOF
 equations are ~100 lines and the core thing to learn. A collision library
 (e.g. `parry`) may be used later for buildings.
 
+### IDs: generated, opaque, generational, typed
+
+Everything stored and referred to elsewhere is identified by an ID from
+one mechanism, the `arena` crate, as in every engine (Bevy's `Entity`,
+Rapier's `RigidBodyHandle`, Jolt's `BodyID`, Godot's `RID`, `slotmap`'s
+keys): **generated** by the storage on insertion, never chosen by its
+user; **opaque** (no arithmetic, no forging); **generational** (index +
+generation: a stale ID to something removed finds nothing, even once its
+slot is reused); **typed** (an `EntityId` can't be passed for a
+`TextureId`). Our own small implementation rather than `slotmap`:
+generational IDs are exactly the memory-management idea this project is
+here to learn.
+
+Two levels, as bevy_rapier connects Bevy entities to Rapier handles:
+games use `EntityId` and `TextureId`; each subsystem keeps its own
+handles inside (`BodyId` in the physics world, `ProxyId` and
+`GpuTexture` in the render backend), and the engine maps entities to
+them with secondary maps. Every collection that owns things is an
+`Arena`; data *about* another arena's things is a `SecondaryMap`, the
+way an ECS stores a component per entity.
+
 ### Entities: ECS-shaped now, real ECS at step 11
 
 We want multiple aircraft, buildings, maybe ground vehicles. These share
@@ -277,8 +298,6 @@ readability. At step 11, when entities multiply:
 - **Contiguous storage**: components in dense arrays (`Vec<T>`, not
   `Vec<Box<T>>`). An archetype ECS gives this for free: each component
   type is a column, so a system walks one array (Struct of Arrays).
-- **Indices, not pointers**: generational handles (index + version) to
-  refer to bodies and render instances.
 - **Instancing**: repeated objects (buildings) as one instance buffer, one
   upload, one draw call, instead of one scene node each.
 - **Copy only what changed**: static objects are uploaded once; resting
