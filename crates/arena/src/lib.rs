@@ -79,16 +79,28 @@ macro_rules! id_type {
     };
 }
 
-/// One place of an arena: its current generation, and the value if any.
+/// One place of an arena.
 #[derive(Clone, Debug, PartialEq)]
 struct Slot<V> {
+    /// How many times this slot was emptied: part of the IDs to its values.
     generation: u32,
+    /// The value, moved in by `insert` and out by `remove`.
     value: Option<V>,
+    /// While empty: the next empty slot to reuse after this one. The list
+    /// of empty slots lives in the empty slots themselves, so removing a
+    /// value never allocates (as in `slotmap`).
+    next_free: Option<u32>,
 }
 
 /// Values of type `V`, each identified by an ID of type `K` handed out
-/// when it's inserted. Stored contiguously in a `Vec`; insertion, lookup
-/// and removal take constant time; removed slots are reused.
+/// when it's inserted.
+///
+/// Memory: one `Vec` of slots, each holding a value (moved in and out,
+/// never copied: lookups and iteration hand out references), its
+/// generation and a free-list link. Insertion, lookup and removal take
+/// constant time. Removing never allocates; inserting allocates only when
+/// the `Vec` is full and grows (doubling, which moves the slots to the new
+/// buffer). Emptied slots are reused before the `Vec` grows.
 ///
 /// An arena only takes its own kind of ID: this doesn't compile.
 ///
@@ -100,11 +112,15 @@ struct Slot<V> {
 /// let pear = pears.insert("pear");
 /// apples.get(pear); // error: expected `AppleId`, found `PearId`
 /// ```
+///
+/// Two arenas are equal (`PartialEq`) if their slots are: same values,
+/// generations and free list, so the same history of insertions and
+/// removals. Stricter than "the same values", as determinism tests want.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Arena<K, V> {
     slots: Vec<Slot<V>>,
-    /// Indices of empty slots, reused before the `Vec` grows.
-    free: Vec<u32>,
+    /// The first empty slot to reuse, if any (see `Slot::next_free`).
+    first_free: Option<u32>,
     len: usize,
     /// The ID type, without storing one (`fn(K)`: no ownership of a `K`).
     key: PhantomData<fn(K) -> K>,
@@ -114,7 +130,7 @@ impl<K: Id, V> Default for Arena<K, V> {
     fn default() -> Self {
         Self {
             slots: Vec::new(),
-            free: Vec::new(),
+            first_free: None,
             len: 0,
             key: PhantomData,
         }
@@ -126,35 +142,43 @@ impl<K: Id, V> Arena<K, V> {
         Self::default()
     }
 
-    /// Stores `value` and returns its new ID.
+    /// Moves `value` in and returns its new ID.
+    ///
+    /// # Panics
+    /// With 2³² slots in use (as a `Vec` panics past its capacity).
     pub fn insert(&mut self, value: V) -> K {
-        self.len += 1;
-        let index = match self.free.pop() {
+        let index = match self.first_free {
             Some(index) => {
-                self.slots[index as usize].value = Some(value);
+                let slot = &mut self.slots[index as usize];
+                self.first_free = slot.next_free.take();
+                slot.value = Some(value);
                 index
             }
             None => {
+                let index = u32::try_from(self.slots.len()).expect("arena full: 2^32 slots");
                 self.slots.push(Slot {
                     generation: 0,
                     value: Some(value),
+                    next_free: None,
                 });
-                (self.slots.len() - 1) as u32
+                index
             }
         };
+        self.len += 1;
         let generation = self.slots[index as usize].generation;
         K::from_raw(RawId { index, generation })
     }
 
-    /// The value with this ID, if it's still here.
-    pub fn get(&self, id: K) -> Option<&V> {
+    /// The slot this ID points to, if its value is still there.
+    fn slot(&self, id: K) -> Option<&Slot<V>> {
         let RawId { index, generation } = id.raw();
         let slot = self.slots.get(index as usize)?;
-        if slot.generation == generation {
-            slot.value.as_ref()
-        } else {
-            None
-        }
+        (slot.generation == generation && slot.value.is_some()).then_some(slot)
+    }
+
+    /// The value with this ID, if it's still here.
+    pub fn get(&self, id: K) -> Option<&V> {
+        self.slot(id)?.value.as_ref()
     }
 
     pub fn get_mut(&mut self, id: K) -> Option<&mut V> {
@@ -167,7 +191,7 @@ impl<K: Id, V> Arena<K, V> {
         }
     }
 
-    /// Takes the value with this ID out, if it's still here. The ID, and
+    /// Moves the value with this ID out, if it's still here. The ID, and
     /// any copy of it, then finds nothing, even once its slot is reused.
     pub fn remove(&mut self, id: K) -> Option<V> {
         let RawId { index, generation } = id.raw();
@@ -176,16 +200,21 @@ impl<K: Id, V> Arena<K, V> {
             return None;
         }
         let value = slot.value.take()?;
-        // The next value in this slot gets a new generation: old IDs to it
-        // no longer match.
-        slot.generation = slot.generation.wrapping_add(1);
-        self.free.push(index);
         self.len -= 1;
+        // The next value in this slot gets a new generation: old IDs to it
+        // no longer match. A slot whose generation can't grow any more is
+        // retired (never reused), rather than wrapping round to 0, where an
+        // ID from four billion reuses ago would match again.
+        if let Some(next) = slot.generation.checked_add(1) {
+            slot.generation = next;
+            slot.next_free = self.first_free;
+            self.first_free = Some(index);
+        }
         Some(value)
     }
 
     pub fn contains(&self, id: K) -> bool {
-        self.get(id).is_some()
+        self.slot(id).is_some()
     }
 
     pub fn len(&self) -> usize {
@@ -226,9 +255,11 @@ impl<K: Id, V> Arena<K, V> {
 /// component per entity (`slotmap`'s `SecondaryMap`): an entity's body
 /// handle, its render proxy, where it's drawn. Indexed by the ID's slot,
 /// so lookups are as fast as in the arena; the generation is checked, so
-/// a stale ID finds nothing.
+/// a stale ID finds nothing. Values are moved in and out, never copied.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SecondaryMap<K, V> {
+    /// By the IDs' slot index: the generation of the ID stored, and its
+    /// value.
     slots: Vec<Option<(u32, V)>>,
     len: usize,
     key: PhantomData<fn(K) -> K>,
@@ -250,17 +281,26 @@ impl<K: Id, V> SecondaryMap<K, V> {
     }
 
     /// Attaches `value` to `id`, replacing what was there for it, or for
-    /// an older ID in the same slot.
-    pub fn insert(&mut self, id: K, value: V) {
+    /// an older ID in the same slot. Returns `false`, changing nothing, if
+    /// `id` is itself older than the ID stored for its slot: a stale ID
+    /// must not overwrite a newer entity's data. Grows (allocates) when
+    /// `id`'s slot is beyond the map's end.
+    pub fn insert(&mut self, id: K, value: V) -> bool {
         let RawId { index, generation } = id.raw();
         let index = index as usize;
         if self.slots.len() <= index {
             self.slots.resize_with(index + 1, || None);
         }
-        if self.slots[index].is_none() {
-            self.len += 1;
+        let slot = &mut self.slots[index];
+        match slot {
+            // Generations only grow (see `Arena::remove`), so a smaller one
+            // is older.
+            Some((stored, _)) if *stored > generation => return false,
+            Some(_) => {}
+            None => self.len += 1,
         }
-        self.slots[index] = Some((generation, value));
+        *slot = Some((generation, value));
+        true
     }
 
     pub fn get(&self, id: K) -> Option<&V> {
@@ -275,6 +315,19 @@ impl<K: Id, V> SecondaryMap<K, V> {
         let RawId { index, generation } = id.raw();
         match self.slots.get_mut(index as usize)? {
             Some((stored, value)) if *stored == generation => Some(value),
+            _ => None,
+        }
+    }
+
+    /// Moves out the value attached to `id`, if there is one.
+    pub fn remove(&mut self, id: K) -> Option<V> {
+        let RawId { index, generation } = id.raw();
+        let slot = self.slots.get_mut(index as usize)?;
+        match slot {
+            Some((stored, _)) if *stored == generation => {
+                self.len -= 1;
+                slot.take().map(|(_, value)| value)
+            }
             _ => None,
         }
     }
@@ -319,6 +372,10 @@ impl<K: Id, V> SecondaryMap<K, V> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc_count::{CountingAllocator, allocations_in};
+
+    #[global_allocator]
+    static ALLOCATOR: CountingAllocator = CountingAllocator;
 
     id_type! {
         /// IDs for the tests.
@@ -404,6 +461,99 @@ mod tests {
             *size = 0;
         }
         assert_eq!(sizes.get(b), Some(&0));
+    }
+
+    #[test]
+    fn values_are_moved_in_and_out_never_copied() {
+        // A `Vec`'s data lives on the heap: if the arena copied it, the
+        // copy would be elsewhere. Same address all along: only the small
+        // `Vec` header (pointer, length, capacity) moved.
+        let mut things = Arena::<ThingId, Vec<u8>>::new();
+        let data = vec![1, 2, 3];
+        let address = data.as_ptr();
+        let id = things.insert(data);
+        assert_eq!(things.get(id).map(|v| v.as_ptr()), Some(address));
+        assert_eq!(things.get_mut(id).map(|v| v.as_ptr()), Some(address));
+        let out = things.remove(id).expect("it's there");
+        assert_eq!(out.as_ptr(), address);
+
+        let mut extra = SecondaryMap::<ThingId, Vec<u8>>::new();
+        let id = things.insert(Vec::new());
+        extra.insert(id, out);
+        assert_eq!(extra.get(id).map(|v| v.as_ptr()), Some(address));
+        assert_eq!(extra.remove(id).map(|v| v.as_ptr()), Some(address));
+    }
+
+    #[test]
+    fn removing_never_allocates_and_reinserting_reuses_the_slots() {
+        let mut things = Arena::<ThingId, u64>::new();
+        let mut ids: Vec<ThingId> = (0..8).map(|n| things.insert(n)).collect();
+        let count = allocations_in(|| {
+            for round in 0..100 {
+                for id in &mut ids {
+                    things.remove(*id);
+                    *id = things.insert(round);
+                }
+            }
+        });
+        assert_eq!(count, 0);
+        assert_eq!(things.slots.len(), 8, "no slot added");
+    }
+
+    #[test]
+    fn a_slot_out_of_generations_is_retired_not_reused() {
+        // Pretend slot 0 was reused 2^32 - 1 times: one more would wrap to
+        // generation 0, where IDs from long ago would match again.
+        let mut things = Arena::<ThingId, &str>::new();
+        things.insert("old");
+        things.slots[0].generation = u32::MAX;
+        let last = ThingId::from_raw(RawId {
+            index: 0,
+            generation: u32::MAX,
+        });
+        assert_eq!(things.remove(last), Some("old"));
+        // Retired: the next value goes into a new slot, and nothing in
+        // slot 0 is ever found again.
+        let new = things.insert("new");
+        assert_eq!(new.raw().index, 1);
+        assert_eq!(things.get(last), None);
+        let wrapped = ThingId::from_raw(RawId {
+            index: 0,
+            generation: 0,
+        });
+        assert_eq!(things.get(wrapped), None);
+    }
+
+    #[test]
+    fn a_stale_id_cannot_overwrite_a_newer_ones_data() {
+        let mut things = Arena::<ThingId, ()>::new();
+        let old = things.insert(());
+        things.remove(old);
+        let new = things.insert(()); // same slot, newer generation
+        let mut names = SecondaryMap::<ThingId, &str>::new();
+        assert!(names.insert(new, "new"));
+        assert!(!names.insert(old, "old"), "refused");
+        assert_eq!((names.get(new), names.get(old)), (Some(&"new"), None));
+        assert_eq!(names.len(), 1);
+    }
+
+    #[test]
+    fn a_secondary_value_can_be_removed() {
+        let mut things = Arena::<ThingId, ()>::new();
+        let (a, b) = (things.insert(()), things.insert(()));
+        let mut names = SecondaryMap::<ThingId, &str>::new();
+        names.insert(a, "a");
+        names.insert(b, "b");
+        assert_eq!(names.remove(a), Some("a"));
+        assert_eq!(names.remove(a), None, "only once");
+        assert_eq!((names.get(a), names.get(b)), (None, Some(&"b")));
+        assert_eq!(names.len(), 1);
+        // An ID beyond the map's end finds nothing to remove.
+        let far = ThingId::from_raw(RawId {
+            index: 99,
+            generation: 0,
+        });
+        assert_eq!(names.remove(far), None);
     }
 
     #[test]
